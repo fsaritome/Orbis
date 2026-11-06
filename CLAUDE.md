@@ -43,6 +43,29 @@ tests) runs in a visible terminal tab, not as hidden background output.
   `open_application("Orbis")` launches a new instance. To look at an
   already running window, just take a screenshot.
 
+## Controlling the running app: use the API
+
+The app serves a local control API on `http://127.0.0.1:7880` (see
+`app/src/api.rs`; `GET /` lists the endpoints). Prefer it over computer-use
+clicks: it's exact, and it acts like the buttons. Every request needs the
+header `X-Orbis: 1`.
+
+```bash
+H='X-Orbis: 1'; U=http://127.0.0.1:7880
+curl -s -H "$H" $U/status                       # turntable, camera, scan, model
+curl -s -H "$H" "$U/log?n=30"
+curl -s -H "$H" -d '{"preset":"standard","rings":2}' $U/scan/settings
+curl -s -H "$H" -d '{"Aperture":"f/8","ISO":160}' $U/camera
+curl -s -H "$H" -d '{"path":"C:/.../shot.png"}' $U/screenshot   # then Read the PNG
+```
+
+- Use forward slashes in JSON paths (or escape backslashes).
+- It is the same single controller as the GUI: while the app runs, never
+  run `rig` or `cam`, so the API is the way to drive the hardware.
+- Moving the table or starting a scan changes the real rig: only when the
+  user asked for it. Read-only calls (`/status`, `/log`, `/camera`,
+  `/model`, `/screenshot`) are always fine.
+
 ## 3D reconstruction (`recon` crate)
 
 - COLMAP + OpenMVS CPU builds live in `%LOCALAPPDATA%\Orbis\tools`

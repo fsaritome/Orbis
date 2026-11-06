@@ -26,6 +26,8 @@ use crate::plan::{self, format_duration, Preset, ScanPlan, ScanSettings};
 use crate::wheel::{self, WheelState};
 use crate::worker::{self, Cmd, Event, ScanOutput};
 
+mod control;
+
 const GREEN: Color32 = Color32::from_rgb(0x3D, 0xC2, 0x6B);
 const AMBER: Color32 = Color32::from_rgb(0xF2, 0xB1, 0x34);
 const RED: Color32 = Color32::from_rgb(0xE5, 0x48, 0x4D);
@@ -52,6 +54,8 @@ struct Saved {
     camera: Vec<(usize, i32)>,
     /// 3D model options.
     model: crate::model::ModelSettings,
+    /// UI zoom (Ctrl +/- or A−/A+ in the top bar).
+    zoom: f32,
 }
 
 fn default_scans_root() -> PathBuf {
@@ -73,6 +77,7 @@ impl Default for Saved {
             autofocus: true,
             camera: Vec::new(),
             model: Default::default(),
+            zoom: 1.0,
         }
     }
 }
@@ -101,7 +106,18 @@ impl Saved {
     fn camera_settings(&self) -> Vec<(Setting, i32)> {
         let mut v: Vec<(usize, i32)> = self.camera.iter().copied().filter(|(i, _)| *i < Setting::ALL.len()).collect();
         v.sort_by_key(|(i, _)| *i);
-        v.into_iter().map(|(i, val)| (Setting::ALL[i], val)).collect()
+        let all: Vec<(Setting, i32)> = v.into_iter().map(|(i, val)| (Setting::ALL[i], val)).collect();
+        // Only restore what the mode lets you set: in A the camera picks the
+        // shutter, in S the aperture, in P both (the camera refuses otherwise).
+        use fuji::ffi::{XSDK_AE_APERTURE_PRIORITY as A, XSDK_AE_PROGRAM as P, XSDK_AE_SHUTTER_PRIORITY as S};
+        let mode = all.iter().find(|(s, _)| *s == Setting::Mode).map(|&(_, m)| m);
+        all.into_iter()
+            .filter(|(s, _)| match (s, mode) {
+                (Setting::Shutter, Some(A | P)) => false,
+                (Setting::Aperture, Some(S | P)) => false,
+                _ => true,
+            })
+            .collect()
     }
 
     /// Folder for a scan starting now.
@@ -183,6 +199,8 @@ pub struct OrbisApp {
     icon: Option<TextureHandle>,
     /// 3D reconstruction of finished scans.
     model: crate::model::ModelPanel,
+    /// Local control API (None if its port was taken).
+    api: Option<Receiver<crate::api::Call>>,
     log: VecDeque<String>,
 }
 
@@ -190,11 +208,12 @@ impl OrbisApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let saved: Saved = cc.storage.and_then(|s| eframe::get_value(s, eframe::APP_KEY)).unwrap_or_default();
         let saved_root = saved.scans_root.clone();
+        setup_fonts(&cc.egui_ctx, saved.zoom);
         let (cam_cmd, cam_events) = camera::spawn(cc.egui_ctx.clone());
         let (cmd, events) = worker::spawn(cc.egui_ctx.clone(), cam_cmd.clone());
         let _ = cmd.send(Cmd::SetGeometry(saved.geometry()));
         let (loaded_tx, loaded_rx) = mpsc::channel();
-        Self {
+        let mut app = Self {
             saved,
             cmd,
             events,
@@ -231,8 +250,17 @@ impl OrbisApp {
                 )
             }),
             model: crate::model::ModelPanel::new(&saved_root),
+            api: None,
             log: VecDeque::new(),
+        };
+        match crate::api::spawn(cc.egui_ctx.clone()) {
+            Ok(rx) => {
+                app.api = Some(rx);
+                app.push_log(format!("Control API on http://127.0.0.1:{} (header X-Orbis: 1)", crate::api::PORT));
+            }
+            Err(e) => app.push_log(format!("Control API off: {e}")),
         }
+        app
     }
 
     fn send(&self, c: Cmd) {
@@ -514,6 +542,16 @@ impl OrbisApp {
             if let Some(h) = hover {
                 resp.on_hover_text(h);
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let z = ui.ctx().zoom_factor();
+                if ui.button("A+").on_hover_text("Larger text (Ctrl +)").clicked() {
+                    ui.ctx().set_zoom_factor((z + 0.1).min(2.5));
+                }
+                ui.label(RichText::new(format!("{:.0} %", z * 100.0)).weak());
+                if ui.button("A−").on_hover_text("Smaller text (Ctrl −)").clicked() {
+                    ui.ctx().set_zoom_factor((z - 0.1).max(0.6));
+                }
+            });
         });
         if let CamState::Problem(why) = &self.cam {
             ui.label(RichText::new(format!("⚠ {why}")).color(AMBER).small());
@@ -654,7 +692,7 @@ impl OrbisApp {
                         } else {
                             egui::ComboBox::from_id_salt(s.label())
                                 .selected_text(text)
-                                .width(190.0)
+                                .width(220.0)
                                 .height(420.0)
                                 .show_ui(
                                 ui,
@@ -1101,6 +1139,11 @@ impl eframe::App for OrbisApp {
             }
         }
         self.handle_events(&ctx);
+        let calls: Vec<crate::api::Call> = self.api.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
+        for call in calls {
+            self.handle_api(&ctx, call);
+        }
+        self.saved.zoom = ctx.zoom_factor();
 
         egui::Panel::top("top").show(ui, |ui| {
             ui.add_space(4.0);
@@ -1110,11 +1153,11 @@ impl eframe::App for OrbisApp {
         egui::Panel::bottom("log").resizable(true).default_size(150.0).show(ui, |ui| {
             egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
                 for line in &self.log {
-                    ui.label(RichText::new(line).monospace().size(13.0));
+                    ui.label(RichText::new(line).monospace());
                 }
             });
         });
-        egui::Panel::right("controls").resizable(false).exact_size(350.0).show(ui, |ui| {
+        egui::Panel::right("controls").resizable(false).exact_size(420.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(6.0);
                 self.scan_panel(ui);
@@ -1154,4 +1197,24 @@ mod tests {
         let s = Saved { scan_name: "   ".into(), ..s };
         assert!(s.new_scan_dir().to_string_lossy().ends_with("_scan"));
     }
+}
+
+/// Bigger text than egui's defaults (which are tuned for dense tools), and
+/// the saved zoom on top.
+fn setup_fonts(ctx: &egui::Context, zoom: f32) {
+    use egui::{FontId, TextStyle};
+    ctx.all_styles_mut(|s| {
+        s.text_styles = [
+            (TextStyle::Heading, FontId::proportional(22.0)),
+            (TextStyle::Body, FontId::proportional(16.0)),
+            (TextStyle::Button, FontId::proportional(16.0)),
+            (TextStyle::Monospace, FontId::monospace(14.5)),
+            (TextStyle::Small, FontId::proportional(13.5)),
+        ]
+        .into();
+        s.spacing.interact_size.y = 26.0;
+        s.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        s.spacing.button_padding = egui::vec2(8.0, 4.0);
+    });
+    ctx.set_zoom_factor(zoom.clamp(0.6, 2.5));
 }

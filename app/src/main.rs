@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // no console window in release
 
+mod api;
 mod app;
 mod camera;
 mod model;

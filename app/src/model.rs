@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use egui::{Color32, RichText, Ui};
 use recon::{Options, Progress, Quality};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 const GREEN: Color32 = Color32::from_rgb(0x3D, 0xC2, 0x6B);
 const AMBER: Color32 = Color32::from_rgb(0xF2, 0xB1, 0x34);
@@ -85,8 +86,9 @@ fn list_scans(root: &Path) -> Vec<ScanEntry> {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
         .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir()).collect())
         .unwrap_or_default();
-    dirs.sort();
-    dirs.reverse();
+    // Newest first (by modification time: names like "test-shots" don't sort by date).
+    let mtime = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    dirs.sort_by_key(|p| std::cmp::Reverse(mtime(p)));
     dirs.into_iter()
         .map(|dir| ScanEntry { photos: jpeg_count(&dir), has_model: model_file(&dir).is_file(), dir })
         .filter(|s| s.photos > 0)
@@ -104,7 +106,8 @@ fn open(path: &Path) {
 impl ModelPanel {
     pub fn new(scans_root: &Path) -> Self {
         Self {
-            target: list_scans(scans_root).into_iter().next().map(|s| s.dir),
+            // Default: the newest real scan (with scan.json), not test shots.
+            target: list_scans(scans_root).into_iter().find(|s| s.dir.join("scan.json").is_file()).map(|s| s.dir),
             job: None,
             result: None,
             tools_installed: recon::tools::locate().is_some(),
@@ -307,5 +310,58 @@ impl ModelPanel {
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------ control API
+
+    /// Starts a build (API). `scan` defaults to the selected scan.
+    pub fn api_build(&mut self, ctx: &egui::Context, settings: &mut ModelSettings, scan: Option<PathBuf>, quality: Option<&str>, masks: Option<bool>) -> Result<PathBuf, String> {
+        if self.job.is_some() {
+            return Err("a build is already running".into());
+        }
+        if let Some(q) = quality {
+            settings.quality = Quality::ALL.iter().position(|x| x.label().eq_ignore_ascii_case(q)).ok_or(format!("unknown quality {q}: draft, standard or high"))?;
+        }
+        if let Some(m) = masks {
+            settings.masks = m;
+        }
+        let dir = scan.or_else(|| self.target.clone()).ok_or("no scan selected: pass {\"scan\": \"<folder>\"}")?;
+        if !dir.is_dir() {
+            return Err(format!("{} is not a folder", dir.display()));
+        }
+        if jpeg_count(&dir) < 8 {
+            return Err(format!("{} has fewer than 8 JPEG photos", dir.display()));
+        }
+        self.target = Some(dir.clone());
+        self.start(ctx, dir.clone(), Options { quality: settings.quality(), masks: settings.masks });
+        Ok(dir)
+    }
+
+    /// Cancels a running build; false if none runs.
+    pub fn api_cancel(&self) -> bool {
+        self.job.as_ref().map(|j| j.cancel.store(true, Ordering::Relaxed)).is_some()
+    }
+
+    pub fn status(&self, settings: &ModelSettings) -> Value {
+        let running = self.job.as_ref().map(|j| {
+            json!({
+                "scan": j.dir,
+                "stage": j.stage.map(|(i, n, name)| json!({ "index": i + 1, "total": n, "name": name })),
+                "last_line": j.last_line,
+                "elapsed_s": j.started.elapsed().as_secs(),
+            })
+        });
+        let last = self.result.as_ref().map(|(dir, r, took)| match r {
+            Ok(obj) => json!({ "scan": dir, "ok": true, "model": obj, "took_s": took.as_secs() }),
+            Err(e) => json!({ "scan": dir, "ok": false, "error": e, "took_s": took.as_secs() }),
+        });
+        json!({
+            "selected_scan": self.target,
+            "quality": settings.quality().label(),
+            "masks": settings.masks,
+            "tools_installed": self.tools_installed,
+            "running": running,
+            "last_result": last,
+        })
     }
 }

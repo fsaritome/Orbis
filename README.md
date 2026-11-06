@@ -162,6 +162,22 @@ to retry that position.
 Photos go to `Pictures\Orbis\<date>_<time>_<name>\ring1_001.JPG …`
 together with `scan.json` (angle, ring, files and time of every photo).
 
+### Control API
+
+While it runs, the app also listens on `http://127.0.0.1:7880` (loopback
+only) for scripts: status, log, scan settings and start/stop, camera
+settings, turntable moves, 3D model builds, UI zoom and window
+screenshots. Each request needs the header `X-Orbis: 1`. Browsers can't
+send that cross-site, so web pages can't drive the rig. `GET /` lists every
+endpoint.
+
+```powershell
+curl.exe -s -H "X-Orbis: 1" http://127.0.0.1:7880/status
+curl.exe -s -H "X-Orbis: 1" -d '{\"degrees\":90}' http://127.0.0.1:7880/turntable/rotate
+```
+
+Text size: **A− / A+** in the top bar (or Ctrl + / Ctrl −), remembered.
+
 ### 3D model
 
 The **🧊 Build 3D model** section turns a scan into a textured mesh,
