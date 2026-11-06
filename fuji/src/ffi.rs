@@ -166,6 +166,7 @@ pub type FnCapAperture = unsafe extern "C" fn(XSDK_HANDLE, Long, *mut Long, *mut
 // The *Prop functions are C-variadic. On x64 Windows, variadic integer and
 // pointer arguments are passed exactly like fixed ones, so each use gets a
 // fixed-arity signature. `lAPIParam` is the number of following arguments.
+pub type FnSetProp0 = unsafe extern "C" fn(XSDK_HANDLE, Long, Long) -> Long;
 pub type FnSetProp1 = unsafe extern "C" fn(XSDK_HANDLE, Long, Long, Long) -> Long;
 pub type FnGetProp1 = unsafe extern "C" fn(XSDK_HANDLE, Long, Long, *mut Long) -> Long;
 pub type FnCapProp2 = unsafe extern "C" fn(XSDK_HANDLE, Long, Long, *mut Long, *mut Long) -> Long;
@@ -192,4 +193,17 @@ pub const SDK_IMAGEQUALITY_SUPERFINE: Long = 6;
 pub const SDK_IMAGEQUALITY_RAW_SUPERFINE: Long = 7;
 
 pub const SDK_FILMSIMULATION_PROVIA: Long = 1;
+
+pub const API_CODE_START_LIVE_VIEW: Long = 0x3301;
+pub const API_CODE_STOP_LIVE_VIEW: Long = 0x3302;
+pub const API_CODE_SET_LIVE_VIEW_QUALITY: Long = 0x3323;
+pub const API_CODE_SET_LIVE_VIEW_SIZE: Long = 0x3325;
+pub const API_CODE_SET_LIVE_VIEW_MODE: Long = 0x332F;
+pub const SDK_LIVEVIEW_QUALITY_FINE: Long = 1;
+pub const SDK_LIVEVIEW_SIZE_L: Long = 1; // 1280 px
+pub const SDK_LIVEVIEW_MODE1: Long = 1;
+
+/// One-shot autofocus while in MF (the AF-ON button).
+pub const XSDK_RELEASE_INSTANTAF: Long = 0xA000;
+pub const XSDK_RELEASE_N_INSTANTAF: Long = 0x0010;
 pub const SDK_WB_DAYLIGHT: Long = 0x0004;

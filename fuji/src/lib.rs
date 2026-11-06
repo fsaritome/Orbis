@@ -111,6 +111,7 @@ struct Fns {
     set_wb: FnSetLong,
     get_wb: FnGetLong,
     set_prop: FnSetProp1,
+    set_prop0: FnSetProp0,
     get_prop: FnGetProp1,
     cap_prop: FnCapProp2,
 }
@@ -186,6 +187,7 @@ impl Sdk {
             set_wb: sym!("XSDK_SetWBMode"),
             get_wb: sym!("XSDK_GetWBMode"),
             set_prop: sym!("XSDK_SetProp"),
+            set_prop0: sym!("XSDK_SetProp"),
             get_prop: sym!("XSDK_GetProp"),
             cap_prop: sym!("XSDK_CapProp"),
         };
@@ -352,6 +354,11 @@ pub struct Image {
 }
 
 impl Image {
+    /// A live view frame rather than a photo.
+    pub fn is_live(&self) -> bool {
+        self.format & 0xFF == XSDK_IMAGEFORMAT_LIVE
+    }
+
     pub fn extension(&self) -> &'static str {
         match self.format & 0xFF {
             XSDK_IMAGEFORMAT_RAW => "RAF",
@@ -496,8 +503,9 @@ impl Camera<'_> {
         Ok(Shot { focus_ok })
     }
 
-    /// Fetch the next image from the transfer buffer, if any.
-    pub fn next_image(&self) -> Result<Option<Image>> {
+    /// Read the head of the transfer queue: a photo, a live view frame, or
+    /// nothing.
+    fn read_next(&self) -> Result<Option<Image>> {
         let mut info: XSDK_ImageInformation = unsafe { std::mem::zeroed() };
         info.lFormat = XSDK_IMAGEFORMAT_NONE;
         let ret = unsafe { (self.sdk.f.read_image_info)(self.h, &mut info) };
@@ -507,14 +515,88 @@ impl Camera<'_> {
         }
         let format = info.lFormat;
         let size = info.lDataSize;
-        if !matches!(format & 0xFF, XSDK_IMAGEFORMAT_RAW | XSDK_IMAGEFORMAT_JPEG | XSDK_IMAGEFORMAT_HEIF) || size <= 0
-        {
+        let known = matches!(
+            format & 0xFF,
+            XSDK_IMAGEFORMAT_RAW | XSDK_IMAGEFORMAT_JPEG | XSDK_IMAGEFORMAT_HEIF | XSDK_IMAGEFORMAT_LIVE
+        );
+        if !known || size <= 0 {
             return Ok(None);
         }
         let mut data = vec![0u8; size as usize];
         self.call("XSDK_ReadImage", unsafe { (self.sdk.f.read_image)(self.h, data.as_mut_ptr(), size as u32) })?;
         let (width, height) = (info.lImagePixWidth, info.lImagePixHeight);
         Ok(Some(Image { name: cstr(&info.strInternalName), format, width, height, data }))
+    }
+
+    /// Fetch the next photo from the transfer buffer, if any. Live view
+    /// frames queued in front of it are skipped.
+    pub fn next_image(&self) -> Result<Option<Image>> {
+        loop {
+            match self.read_next()? {
+                Some(img) if img.is_live() => continue,
+                other => return Ok(other),
+            }
+        }
+    }
+
+    /// Start streaming live view frames (JPEG, 1280 px) into the transfer
+    /// queue; read them with [`Camera::next_live_frame`].
+    pub fn start_live_view(&self) -> Result<()> {
+        let f = &self.sdk.f;
+        // Quality, size and mode are best effort: not every body has them.
+        unsafe {
+            (f.set_prop)(self.h, API_CODE_SET_LIVE_VIEW_QUALITY, 1, SDK_LIVEVIEW_QUALITY_FINE);
+            (f.set_prop)(self.h, API_CODE_SET_LIVE_VIEW_SIZE, 1, SDK_LIVEVIEW_SIZE_L);
+            (f.set_prop)(self.h, API_CODE_SET_LIVE_VIEW_MODE, 1, SDK_LIVEVIEW_MODE1);
+        }
+        self.call("StartLiveView", unsafe { (f.set_prop0)(self.h, API_CODE_START_LIVE_VIEW, 0) })
+    }
+
+    pub fn stop_live_view(&self) -> Result<()> {
+        let r = self.call("StopLiveView", unsafe { (self.sdk.f.set_prop0)(self.h, API_CODE_STOP_LIVE_VIEW, 0) });
+        // Throw away frames still queued.
+        while matches!(self.read_next(), Ok(Some(ref i)) if i.is_live()) {}
+        r
+    }
+
+    /// Newest live view frame (JPEG bytes), dropping older ones. Photos in
+    /// the queue are left for [`Camera::next_image`].
+    pub fn next_live_frame(&self) -> Result<Option<Vec<u8>>> {
+        let mut newest = None;
+        // Peek-and-read: stop at the first non-live item.
+        for _ in 0..8 {
+            let mut info: XSDK_ImageInformation = unsafe { std::mem::zeroed() };
+            info.lFormat = XSDK_IMAGEFORMAT_NONE;
+            if unsafe { (self.sdk.f.read_image_info)(self.h, &mut info) } != XSDK_COMPLETE {
+                break;
+            }
+            let (format, size) = (info.lFormat, info.lDataSize);
+            if format & 0xFF != XSDK_IMAGEFORMAT_LIVE || size <= 0 {
+                break;
+            }
+            let mut data = vec![0u8; size as usize];
+            self.call("XSDK_ReadImage", unsafe { (self.sdk.f.read_image)(self.h, data.as_mut_ptr(), size as u32) })?;
+            newest = Some(data);
+        }
+        Ok(newest)
+    }
+
+    /// Run autofocus once without taking a picture. In MF this uses the
+    /// AF-ON style instant AF. Returns whether focus locked.
+    pub fn focus_now(&self) -> Result<bool> {
+        let f = &self.sdk.f;
+        let manual = self.get(Setting::Focus).ok() == Some(SDK_FOCUS_MANUAL);
+        let (on, off) = if manual {
+            (XSDK_RELEASE_INSTANTAF, XSDK_RELEASE_N_INSTANTAF)
+        } else {
+            (XSDK_RELEASE_S1ON, XSDK_RELEASE_N_S1OFF)
+        };
+        let (mut opt, mut status) = (1, XSDK_RELEASE_OK);
+        let ret = unsafe { (f.release)(self.h, on, &mut opt, &mut status) };
+        let (mut o, mut s) = (1, 0);
+        unsafe { (f.release)(self.h, off, &mut o, &mut s) };
+        self.call("XSDK_Release(focus)", ret)?;
+        Ok(status != XSDK_RELEASE_AF_FAILURE)
     }
 
     /// Wait until the camera has delivered at least one image, then return

@@ -17,6 +17,10 @@ pub enum CamCmd {
     Capture { stem: PathBuf, autofocus: bool, reply: Sender<Result<Capture, String>> },
     /// Change settings, in this order (e.g. mode before shutter speed).
     Set(Vec<(Setting, i32)>),
+    /// Start or stop live view.
+    LiveView(bool),
+    /// Run autofocus once (also works in MF, like the AF-ON button).
+    FocusNow,
 }
 
 /// What a capture produced.
@@ -43,6 +47,11 @@ pub enum CamEvent {
     /// A photo was saved. Images are already scaled for display.
     Photo { path: PathBuf, preview: Option<ColorImage>, thumb: Option<ColorImage> },
     CaptureFailed,
+    /// Live view switched on or off (also on disconnect).
+    Live(bool),
+    LiveFrame(ColorImage),
+    /// Result of [`CamCmd::FocusNow`]: focus locked or not.
+    Focused(bool),
     Log(String),
 }
 
@@ -84,6 +93,7 @@ fn refuse_pending(cmds: &Receiver<CamCmd>, out: &Emitter, why: &str, wait: Durat
                 out.send(CamEvent::CaptureFailed);
             }
             Ok(CamCmd::Set(_)) => out.send(CamEvent::Log(format!("Camera: can't change settings: {why}"))),
+            Ok(CamCmd::LiveView(_) | CamCmd::FocusNow) => out.send(CamEvent::Live(false)),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return false,
         }
@@ -150,10 +160,41 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
         // Connected: serve commands, refresh settings, watch for unplugging.
         let mut next_refresh = Instant::now() + REFRESH;
         let mut refreshes = 0u32;
+        let mut live = false;
         loop {
-            match cmds.recv_timeout(Duration::from_millis(200)) {
+            // Poll fast while live view runs, otherwise idle.
+            let wait = if live { Duration::from_millis(30) } else { Duration::from_millis(200) };
+            match cmds.recv_timeout(wait) {
+                Ok(CamCmd::LiveView(on)) if on != live => {
+                    let r = if on { cam.start_live_view() } else { cam.stop_live_view() };
+                    match r {
+                        Ok(()) => live = on,
+                        Err(e) => out.send(CamEvent::Log(format!("Camera: live view: {e:#}"))),
+                    }
+                    out.send(CamEvent::Live(live));
+                }
+                Ok(CamCmd::LiveView(_)) => out.send(CamEvent::Live(live)),
+                Ok(CamCmd::FocusNow) => {
+                    let ok = cam.focus_now().unwrap_or_else(|e| {
+                        out.send(CamEvent::Log(format!("Camera: focus: {e:#}")));
+                        false
+                    });
+                    out.send(CamEvent::Log(format!(
+                        "Camera: {}",
+                        if ok { "focus locked" } else { "autofocus couldn't lock (light? contrast?)" }
+                    )));
+                    out.send(CamEvent::Focused(ok));
+                }
                 Ok(CamCmd::Capture { stem, autofocus, reply }) => {
+                    // Live view frames share the transfer queue: pause it.
+                    if live {
+                        let _ = cam.stop_live_view();
+                    }
                     let result = capture(&cam, &stem, autofocus, &out).map_err(|e| format!("{e:#}"));
+                    if live && cam.start_live_view().is_err() {
+                        live = false;
+                        out.send(CamEvent::Live(false));
+                    }
                     if let Err(e) = &result {
                         out.send(CamEvent::Log(format!("Camera: shot failed: {e}")));
                         out.send(CamEvent::CaptureFailed);
@@ -171,12 +212,25 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
                     send_settings(&cam, &out, true);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
+                Err(RecvTimeoutError::Disconnected) => {
+                    if live {
+                        let _ = cam.stop_live_view();
+                    }
+                    return;
+                }
+            }
+            if live {
+                if let Ok(Some(jpeg)) = cam.next_live_frame() {
+                    if let Ok(img) = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg) {
+                        out.send(CamEvent::LiveFrame(to_color_image(&img)));
+                    }
+                }
             }
             if Instant::now() >= next_refresh {
                 next_refresh = Instant::now() + REFRESH;
                 if !cam.alive() {
                     out.send(CamEvent::Log("Camera disconnected".into()));
+                    out.send(CamEvent::Live(false));
                     break;
                 }
                 // Values every 2 s; full choice lists every 20 s (lens swaps).

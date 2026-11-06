@@ -169,6 +169,10 @@ pub struct OrbisApp {
     loaded_tx: Sender<(PathBuf, Option<ColorImage>)>,
     loaded_rx: Receiver<(PathBuf, Option<ColorImage>)>,
     test_shot_busy: bool,
+    live_on: bool,
+    live_tex: Option<TextureHandle>,
+    focusing: bool,
+    focus_result: Option<bool>,
     log: VecDeque<String>,
 }
 
@@ -200,6 +204,10 @@ impl OrbisApp {
             loaded_tx,
             loaded_rx,
             test_shot_busy: false,
+            live_on: false,
+            live_tex: None,
+            focusing: false,
+            focus_result: None,
             log: VecDeque::new(),
         }
     }
@@ -224,6 +232,11 @@ impl OrbisApp {
     }
 
     fn start_scan(&mut self, real: bool) {
+        // Live view would pause and resume around every photo: switch it
+        // off for the scan.
+        if real && self.live_on {
+            let _ = self.cam_cmd.send(CamCmd::LiveView(false));
+        }
         let output = real.then(|| ScanOutput {
             dir: self.saved.new_scan_dir(),
             name: self.saved.scan_name.clone(),
@@ -369,6 +382,21 @@ impl OrbisApp {
                     }
                 }
                 CamEvent::CaptureFailed => self.test_shot_busy = false,
+                CamEvent::Live(on) => {
+                    self.live_on = on;
+                    if !on {
+                        self.live_tex = None;
+                    }
+                }
+                CamEvent::LiveFrame(img) => match &mut self.live_tex {
+                    // Reuse the texture: a new upload each frame, no new handle.
+                    Some(tex) => tex.set(img, TextureOptions::LINEAR),
+                    None => self.live_tex = Some(ctx.load_texture("live", img, TextureOptions::LINEAR)),
+                },
+                CamEvent::Focused(ok) => {
+                    self.focusing = false;
+                    self.focus_result = Some(ok);
+                }
                 CamEvent::Log(msg) => self.push_log(msg),
             }
         }
@@ -791,7 +819,10 @@ impl OrbisApp {
                 },
             );
             ui.add_space(12.0);
-            self.preview_area(ui, egui::vec2(side * 1.5, side));
+            ui.vertical(|ui| {
+                self.preview_toolbar(ui);
+                self.preview_area(ui, egui::vec2(side * 1.5, side - 30.0));
+            });
         });
 
         ui.add_space(10.0);
@@ -804,10 +835,69 @@ impl OrbisApp {
         self.thumb_strip(ui, ctx);
     }
 
+    /// Live view / focus buttons above the preview.
+    fn preview_toolbar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            let ready = self.camera_ready();
+            let label = if self.live_on { "■ Stop live view" } else { "◉ Live view" };
+            if ui
+                .add_enabled(ready && self.scan.is_none(), egui::Button::new(label).selected(self.live_on))
+                .on_hover_text("See through the camera to frame the object and check focus")
+                .clicked()
+            {
+                let _ = self.cam_cmd.send(CamCmd::LiveView(!self.live_on));
+            }
+            let focus = egui::Button::new(if self.focusing { "🎯 Focusing…" } else { "🎯 Focus" });
+            if ui
+                .add_enabled(ready && self.scan.is_none() && !self.focusing, focus)
+                .on_hover_text("Autofocus once now, also in MF. Then shoot the scan in MF so focus stays put.")
+                .clicked()
+            {
+                self.focusing = true;
+                let _ = self.cam_cmd.send(CamCmd::FocusNow);
+            }
+            if let Some(ok) = self.focus_result {
+                if ok {
+                    ui.label(RichText::new("focus locked").color(GREEN).small());
+                } else {
+                    ui.label(RichText::new("couldn't focus").color(AMBER).small());
+                }
+            }
+        });
+    }
+
     fn preview_area(&mut self, ui: &mut Ui, size: egui::Vec2) {
         let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
         let v = ui.visuals();
         ui.painter().rect_filled(rect, 8.0, v.extreme_bg_color);
+
+        // Live view takes over the preview while it runs.
+        if let (true, Some(tex)) = (self.live_on, &self.live_tex) {
+            let img = tex.size_vec2();
+            let scale = (rect.width() / img.x).min(rect.height() / img.y);
+            let r = egui::Rect::from_center_size(rect.center(), img * scale);
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter().image(tex.id(), r, uv, Color32::WHITE);
+            let badge = egui::Rect::from_min_size(rect.left_top() + egui::vec2(10.0, 10.0), egui::vec2(58.0, 22.0));
+            ui.painter().rect_filled(badge, 4.0, Color32::from_black_alpha(160));
+            ui.painter().text(
+                badge.center(),
+                egui::Align2::CENTER_CENTER,
+                "● LIVE",
+                egui::FontId::proportional(13.0),
+                RED,
+            );
+            // Rule-of-thirds grid helps centring the object on the plate.
+            let stroke = egui::Stroke::new(1.0, Color32::from_white_alpha(50));
+            for i in 1..3 {
+                let x = r.left() + r.width() * i as f32 / 3.0;
+                let y = r.top() + r.height() * i as f32 / 3.0;
+                ui.painter().line_segment([egui::pos2(x, r.top()), egui::pos2(x, r.bottom())], stroke);
+                ui.painter().line_segment([egui::pos2(r.left(), y), egui::pos2(r.right(), y)], stroke);
+            }
+            return;
+        }
+
         match &self.preview {
             Some((tex, path)) => {
                 let img = tex.size_vec2();

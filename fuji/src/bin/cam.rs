@@ -31,6 +31,13 @@ enum Cmd {
     },
     /// Every setting with its current value and the values it accepts.
     Settings,
+    /// Run live view for a few seconds and save the last frame.
+    Live {
+        #[arg(long, default_value_t = 3)]
+        seconds: u64,
+        #[arg(long, default_value = "scans/test/live.jpg")]
+        out: PathBuf,
+    },
     /// Save any images still waiting in the camera's transfer buffer.
     Drain {
         #[arg(long, default_value = "scans/test")]
@@ -111,6 +118,31 @@ fn main() -> Result<()> {
                     let dupes = if unique.len() < names.len() { "  ⚠ duplicate names" } else { "" };
                     println!("{:16} {} choices: {}{dupes}", "", names.len(), names.join(", "));
                 }
+            }
+        }
+        Cmd::Live { seconds, out } => {
+            cam.start_live_view()?;
+            let t = Instant::now();
+            let (mut frames, mut last) = (0u32, None);
+            while t.elapsed() < Duration::from_secs(seconds) {
+                if let Some(f) = cam.next_live_frame()? {
+                    frames += 1;
+                    last = Some(f);
+                } else {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+            cam.stop_live_view()?;
+            let fps = frames as f64 / t.elapsed().as_secs_f64();
+            match last {
+                Some(f) => {
+                    if let Some(dir) = out.parent() {
+                        std::fs::create_dir_all(dir)?;
+                    }
+                    std::fs::write(&out, &f)?;
+                    println!("{frames} frames in {seconds} s ({fps:.1} fps), {} KB each; last saved to {}", f.len() / 1024, out.display());
+                }
+                None => println!("no live view frames arrived"),
             }
         }
         Cmd::Drain { out } => {

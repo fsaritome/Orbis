@@ -33,9 +33,9 @@ tests) runs in a visible terminal tab, not as hidden background output.
   Close the running window first, or the build can't replace `orbis.exe`.
 - To click in the app yourself: close it, `cargo build --release -p
   orbis`, then start it with computer-use `open_application("Orbis")`
-  (that instance can be brought to the front again the same way). An
-  instance started from a terminal can't be focused, and
-  `open_application` would start a second one.
+  **once**. `open_application` always starts a *new* instance, so never
+  call it again while one runs (check `Get-Process orbis`); if another
+  window covers Orbis, click inside Orbis or drag its title bar instead.
 - The camera, like the turntable, has one controller at a time: close
   the app before `cam ...` commands.
 - The turntable accepts **one TCP client at a time**. Never run `rig` while
