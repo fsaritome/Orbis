@@ -40,9 +40,10 @@ so it only needs power.
 | `rig-protocol/` | Messages shared by PC and firmware (`no_std`, postcard + COBS) | ✅ |
 | `firmware/` | ESP32 firmware: motor on core 1, Wi-Fi/TCP/discovery/serial on core 0 | ✅ tested on hardware |
 | `rig/` | PC library + `rig` CLI to drive the turntable | ✅ |
-| `fuji/` | Bindings + safe wrapper for Fujifilm `XAPI.dll`, and the `cam` test CLI | ✅ connects; capture awaits tether mode test |
-| `recon/` | Photogrammetry: background masks + COLMAP/OpenMVS pipeline, and the `recon` CLI | 🚧 in progress |
-| `app/` | `orbis` desktop app (egui): scan settings, angle wheel, turntable control, dry runs | ✅ turntable part |
+| `fuji/` | Bindings + safe wrapper for Fujifilm `XAPI.dll` (USB and Wi-Fi tethering), and the `cam` test CLI | ✅ tested on the X-T4 |
+| `recon/` | Photogrammetry: background masks + COLMAP/OpenMVS pipeline, and the `recon` CLI | 🚧 masks tested on real photos; full model awaits a 36-photo scan |
+| `app/` | `orbis` desktop app (egui): scans, camera control, live view, 3D model, local control API | ✅ |
+| `installer/`, `scripts/` | Windows installer, flashing, packaging, API end-to-end test | ✅ |
 | `sdk/` | Your copy of the Fujifilm SDK (git-ignored) | local only |
 | `docs/img/`, `tools/*-art.ps1` | Logo, mascot, icons, social preview and the scripts that make them | ✅ |
 
@@ -51,7 +52,8 @@ so it only needs power.
 - ESP32-WROOM dev board (ESP32-D0WD-V3, CP210x USB bridge)
 - **ST-4045-A1** microstep driver, 12–40 V supply on DC+/DC−
 - NEMA 17 stepper (A+ green, A− black, B+ red, B− blue)
-- Fujifilm X-T4 on USB
+- Fujifilm X-T4 on USB (or Wi-Fi). For long sessions: a USB-C PD supply
+  or the CP-W235 DC coupler, since tethering doesn't charge the battery
 - Power for the ESP32: USB charger, or a 5 V buck converter from the
   driver's supply into the board's 5V/VIN pin
 
@@ -118,6 +120,35 @@ From then on it only needs power. `rig` finds it on the network by itself.
 cargo run --release -p orbis
 ```
 
+- **Scan:** name, detail preset, rings, settle time, time/disk estimate.
+  *Start scan* turns, settles, shoots and saves every position;
+  *Dry run* turns only.
+- **Camera:** full control from the app: mode, aperture, shutter, ISO,
+  white balance, focus (MF/AF-S/AF-C), image quality, film simulation.
+  Value lists come from the camera itself. **✨ Photogrammetry settings**
+  sets M, ISO 160, daylight WB, Provia, RAW + JPEG Fine in one click; tips
+  flag anything that would make photos inconsistent. Your choices are
+  re-applied on every connect (the X-T4 returns to its dials when the app
+  lets go). Autofocus toggle and test shot. Connects over USB or Wi-Fi.
+- **Battery:** the camera's charge in the top bar. At 20 % or less the
+  X-T4 refuses shots and then switches off, so Orbis warns and won't start
+  a real scan (dry runs still work).
+- **Live view:** with click-to-focus; settings changed during live view
+  restart it with the new exposure.
+- **Preview:** the latest photo large, thumbnails below (click to view,
+  double-click to open).
+- **Angle wheel:** progress per ring and the live table angle.
+- **Turntable:** jog, zero, hold, speed, mechanics.
+- **3D model:** build a textured mesh from a finished scan (see below).
+- **Text size:** A− / A+ in the top bar (or Ctrl + / Ctrl −), remembered.
+
+The BOOT button on the turntable starts/stops a scan and confirms ring
+changes. A failed photo pauses the scan; fix the cause and press Resume
+to retry that position.
+
+Photos go to `Pictures\Orbis\<date>_<time>_<name>\ring1_001.JPG …`
+together with `scan.json` (angle, ring, files and time of every photo).
+
 ### Windows installer
 
 ```powershell
@@ -140,28 +171,6 @@ warranty. The setup's license page therefore shows the MIT license plus
 the user must accept. Refresh `sdk\bin` when Fujifilm releases bug fixes. The
 DLLs still never go into git: they're not under the MIT license.
 
-- **Scan:** name, detail preset, rings, settle time, time/disk estimate.
-  *Start scan* turns, settles, shoots and saves every position;
-  *Dry run* turns only.
-- **Camera:** full control from the app: mode, aperture, shutter, ISO,
-  white balance, focus (MF/AF-S/AF-C), image quality, film simulation.
-  Value lists come from the camera itself. **✨ Photogrammetry settings**
-  sets M, ISO 160, daylight WB, Provia, RAW + JPEG Fine in one click; tips
-  flag anything that would make photos inconsistent. Your choices are
-  re-applied on every connect (the X-T4 returns to its dials when the app
-  lets go). Autofocus toggle and test shot.
-- **Preview:** the latest photo large, thumbnails below (click to view,
-  double-click to open).
-- **Angle wheel:** progress per ring and the live table angle.
-- **Turntable:** jog, zero, hold, speed, mechanics.
-
-The BOOT button on the turntable starts/stops a scan and confirms ring
-changes. A failed photo pauses the scan; fix the cause and press Resume
-to retry that position.
-
-Photos go to `Pictures\Orbis\<date>_<time>_<name>\ring1_001.JPG …`
-together with `scan.json` (angle, ring, files and time of every photo).
-
 ### Control API
 
 While it runs, the app also listens on `http://127.0.0.1:7880` (loopback
@@ -176,7 +185,8 @@ curl.exe -s -H "X-Orbis: 1" http://127.0.0.1:7880/status
 curl.exe -s -H "X-Orbis: 1" -d '{\"degrees\":90}' http://127.0.0.1:7880/turntable/rotate
 ```
 
-Text size: **A− / A+** in the top bar (or Ctrl + / Ctrl −), remembered.
+`scripts\test-api.ps1` runs an end-to-end test of the running app through
+the API: every setting, turntable moves, dry runs, live view, a test shot.
 
 ### 3D model
 
@@ -227,7 +237,11 @@ own licenses. Command line: `cargo run --release -p recon -- <scan folder>
   once (test shot with autofocus), then set Focus = MF and switch off
   "Autofocus before every photo".
 - Test without the app (close it first, only one program can control the
-  camera): `cargo run -p fuji --bin cam -- info | settings | shoot`.
+  camera): `cargo run -p fuji --bin cam -- info | settings | shoot | diag`.
+- **Power:** tethering runs the camera on its battery, and the X-T4 only
+  charges over USB while switched off. SHOOT_ERROR on every shot, followed by
+  the camera switching off, means the battery is empty. Set AUTO POWER OFF in
+  the camera menu if it dozes off between scans.
 
 Only one program can talk to the turntable at a time: close the app before
 using `rig`, and vice versa.
@@ -267,5 +281,10 @@ sdk/doc/       MANUAL/SDK_ProgrammingReference.pdf
 5. ✅ Scans with photos, `scan.json`, pause + retry on failure (tested)
 6. ✅ GUI: detail presets, angle wheel, photo preview + thumbnails,
    camera panel, turntable jog
-7. ⬜ Retake a single photo, set exposure from the app, live view, past scans
-7. ⬜ Optional: sharpness check, launch Meshroom/RealityCapture after a scan
+7. ✅ Camera settings from the app, live view with click-to-focus, battery
+   display, Wi-Fi tethering
+8. ✅ Local control API and end-to-end test script; Windows installer
+9. 🚧 3D model in the app (masks + COLMAP + OpenMVS): pipeline runs, first
+   full model from a 36-photo scan still to come
+10. ⬜ Retake a single photo, past-scans browser, sharpness check, return
+    to 0° after a scan

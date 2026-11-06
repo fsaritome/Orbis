@@ -109,6 +109,20 @@ Release etc.) without the user's OK.
   sets AUTO POWER OFF in the camera menu.
 - "RAW + JPEG Super Fine" is offered by the camera but refused
   (COMBINATION); don't pick it in tests.
+- The camera can also be on **Wi-Fi** (PC CONNECTION MODE → WIRELESS
+  TETHER SHOOTING FIXED; address in the app's camera panel or `POST
+  /camera/wifi`; `cam --ip <addr> ...`). Orbis tries USB first. Over Wi-Fi
+  a dying camera blocks SDK calls for minutes before the disconnect shows.
+- After changing the app or API, run `& .\scripts\test-api.ps1` in a
+  visible tab (`-NoMotion` / `-NoShutter` to leave the hardware alone).
+
+## Git
+
+- Build, restart and commit locally on your own; **push only when the
+  user says so**.
+- Commits as `fsaritome <ferit@powdersplash.com>`. No real LAN addresses,
+  MACs or passwords in code, docs or commit messages: use examples like
+  192.168.1.60.
 
 ## Hardware facts
 

@@ -34,7 +34,7 @@ POST /scan/pause | /scan/resume | /scan/stop | /scan/continue   (continue = next
 GET  /camera                       settings, values and choices
 POST /camera                       {\"Aperture\": \"F8\", \"ISO\": 160, ...}  (name or raw value)
 GET  /camera/diag                  buffer, card recording, priority, last error
-POST /camera/wifi                  {ip: \"192.168.178.139\"} wireless tethering after USB (\"\" = USB only)
+POST /camera/wifi                  {ip: \"192.168.1.60\"} wireless tethering after USB (\"\" = USB only)
 POST /camera/preset                photogrammetry settings
 POST /camera/test-shot
 POST /camera/live                  {on: true}
