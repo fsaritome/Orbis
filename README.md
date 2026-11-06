@@ -32,7 +32,7 @@ so it only needs power.
 | Path | What | Status |
 |---|---|---|
 | `rig-protocol/` | Messages shared by PC and firmware (`no_std`, postcard + COBS) | ✅ |
-| `firmware/` | ESP32 firmware: motor on core 1, Wi-Fi/TCP/discovery/serial on core 0 | ✅ builds, untested on hardware |
+| `firmware/` | ESP32 firmware: motor on core 1, Wi-Fi/TCP/discovery/serial on core 0 | ✅ tested on hardware |
 | `rig/` | PC library + `rig` CLI to drive the turntable | ✅ |
 | `fuji-sdk-sys/`, `fuji/` | Bindings + safe wrapper for Fujifilm `XAPI.dll` | next |
 | `scanner/` | Scan orchestrator + egui GUI with preview | planned |
@@ -133,7 +133,7 @@ sdk/doc/       MANUAL/SDK_ProgrammingReference.pdf
 
 1. ✅ Protocol, turntable CLI
 2. ✅ Wi-Fi firmware (discovery, TCP, serial setup, dedicated motor core)
-3. ⬜ Flash and test on the real hardware
+3. ✅ Flashed and tested on the real hardware (Wi-Fi, discovery, motor)
 4. ⬜ `fuji-sdk-sys` / `fuji`: detect camera, lock settings, shoot, download, live view
 5. ⬜ `scanner`: rings × shots, settle time, retakes, `scan.json`, resume
 6. ⬜ GUI (egui): detail presets, angle wheel, photo preview + thumbnails,
