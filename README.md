@@ -113,8 +113,13 @@ cargo run --release -p orbis
 - **Scan:** name, detail preset, rings, settle time, time/disk estimate.
   *Start scan* turns, settles, shoots and saves every position;
   *Dry run* turns only.
-- **Camera:** model, lens, exposure mode, aperture, shutter, ISO, with tips
-  (use M, fixed ISO, RAW + JPEG), autofocus toggle and a test shot.
+- **Camera:** full control from the app: mode, aperture, shutter, ISO,
+  white balance, focus (MF/AF-S/AF-C), image quality, film simulation.
+  Value lists come from the camera itself. **✨ Photogrammetry settings**
+  sets M, ISO 160, daylight WB, Provia, RAW + JPEG Fine in one click; tips
+  flag anything that would make photos inconsistent. Your choices are
+  re-applied on every connect (the X-T4 returns to its dials when the app
+  lets go). Autofocus toggle and test shot.
 - **Preview:** the latest photo large, thumbnails below (click to view,
   double-click to open).
 - **Angle wheel:** progress per ring and the live table angle.
@@ -131,9 +136,12 @@ together with `scan.json` (angle, ring, files and time of every photo).
 
 - MENU → wrench → CONNECTION SETTING → CONNECTION MODE →
   **USB TETHER SHOOTING AUTO**, then replug USB.
-- Exposure **M**, fixed ISO, image quality **RAW + JPEG** (or JPEG).
-- Test without the app: `cargo run -p fuji --bin cam -- info` /
-  `-- shoot`.
+- Everything else is set from the app. Best results: press
+  ✨ Photogrammetry settings, pick aperture/shutter for your light, focus
+  once (test shot with autofocus), then set Focus = MF and switch off
+  "Autofocus before every photo".
+- Test without the app (close it first, only one program can control the
+  camera): `cargo run -p fuji --bin cam -- info | settings | shoot`.
 
 Only one program can talk to the turntable at a time: close the app before
 using `rig`, and vice versa.
@@ -168,9 +176,9 @@ sdk/doc/       MANUAL/SDK_ProgrammingReference.pdf
 1. ✅ Protocol, turntable CLI
 2. ✅ Wi-Fi firmware (discovery, TCP, serial setup, dedicated motor core)
 3. ✅ Flashed and tested on the real hardware (Wi-Fi, discovery, motor)
-4. 🟡 `fuji`: detect, open, shoot, transfer (connects; capture untested
-   until the camera is in tether mode)
-5. 🟡 Scans with photos, `scan.json`, retry on failure (untested with camera)
+4. ✅ `fuji`: detect, open, shoot, transfer, read/set all settings
+   (tested on the X-T4)
+5. ✅ Scans with photos, `scan.json`, pause + retry on failure (tested)
 6. ✅ GUI: detail presets, angle wheel, photo preview + thumbnails,
    camera panel, turntable jog
 7. ⬜ Retake a single photo, set exposure from the app, live view, past scans

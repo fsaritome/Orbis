@@ -20,7 +20,8 @@ use egui::{Color32, ColorImage, RichText, TextureHandle, TextureOptions, Ui};
 use rig::Geometry;
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{self, CamCmd, CamEvent, CamInfo, ExposureView};
+use crate::camera::{self, CamCmd, CamEvent, CamInfo};
+use fuji::{Choices, Setting, Values};
 use crate::plan::{self, format_duration, Preset, ScanPlan, ScanSettings};
 use crate::wheel::{self, WheelState};
 use crate::worker::{self, Cmd, Event, ScanOutput};
@@ -45,6 +46,10 @@ struct Saved {
     scans_root: PathBuf,
     /// Focus before every photo (off = use the focus as set, e.g. MF).
     autofocus: bool,
+    /// Camera settings chosen in the app, as (index into `Setting::ALL`,
+    /// value). Re-applied on every connect: once the app lets go, the X-T4
+    /// falls back to its physical dials.
+    camera: Vec<(usize, i32)>,
 }
 
 fn default_scans_root() -> PathBuf {
@@ -64,6 +69,7 @@ impl Default for Saved {
             scan_name: "object".into(),
             scans_root: default_scans_root(),
             autofocus: true,
+            camera: Vec::new(),
         }
     }
 }
@@ -77,6 +83,22 @@ impl Saved {
     fn motion(&self) -> (u32, u32) {
         let speed = (self.speed_deg_s / 360.0 * self.geometry().steps_per_table_rev()).round().max(1.0) as u32;
         (speed, speed * 2)
+    }
+
+    fn remember_camera(&mut self, changes: &[(Setting, i32)]) {
+        for &(s, v) in changes {
+            let idx = Setting::ALL.iter().position(|&x| x == s).expect("in ALL");
+            self.camera.retain(|(i, _)| *i != idx);
+            self.camera.push((idx, v));
+        }
+    }
+
+    /// Remembered settings in a safe order: mode first (shutter speeds
+    /// depend on it), then the rest in `Setting::ALL` order.
+    fn camera_settings(&self) -> Vec<(Setting, i32)> {
+        let mut v: Vec<(usize, i32)> = self.camera.iter().copied().filter(|(i, _)| *i < Setting::ALL.len()).collect();
+        v.sort_by_key(|(i, _)| *i);
+        v.into_iter().map(|(i, val)| (Setting::ALL[i], val)).collect()
     }
 
     /// Folder for a scan starting now.
@@ -112,6 +134,8 @@ struct ScanView {
     paused: bool,
     waiting_ring: Option<u32>,
     started: Instant,
+    /// Table angle where the scan's 0° is.
+    origin_deg: f64,
 }
 
 struct Thumb {
@@ -127,7 +151,11 @@ pub struct OrbisApp {
     cam_events: Receiver<CamEvent>,
     link: Link,
     cam: CamState,
-    exposure: Option<ExposureView>,
+    cam_values: Option<Values>,
+    cam_choices: Choices,
+    /// The turntable has no home sensor: its position is zeroed once per
+    /// session on the first connect, so angles start at 0°.
+    zeroed: bool,
     table_deg: Option<f64>,
     moving: bool,
     enabled: bool,
@@ -159,7 +187,9 @@ impl OrbisApp {
             cam_events,
             link: Link::Connecting,
             cam: CamState::Searching,
-            exposure: None,
+            cam_values: None,
+            cam_choices: Choices::default(),
+            zeroed: false,
             table_deg: None,
             moving: false,
             enabled: true,
@@ -215,6 +245,10 @@ impl OrbisApp {
                     let (max_speed, accel) = self.saved.motion();
                     self.send(Cmd::SetGeometry(self.saved.geometry()));
                     self.send(Cmd::SetMotion { max_speed, accel });
+                    if !self.zeroed {
+                        self.zeroed = true;
+                        self.send(Cmd::SetZero);
+                    }
                 }
                 Event::Disconnected(why) => {
                     self.link = Link::Down(why);
@@ -234,7 +268,7 @@ impl OrbisApp {
                         None => {}
                     }
                 }
-                Event::ScanStarted { plan, dir } => {
+                Event::ScanStarted { plan, dir, origin_deg } => {
                     self.last_scan = None;
                     if dir.is_some() {
                         self.thumbs.clear();
@@ -248,6 +282,7 @@ impl OrbisApp {
                         paused: false,
                         waiting_ring: None,
                         started: Instant::now(),
+                        origin_deg,
                     });
                 }
                 Event::Shot { ring, index, angle, files } => {
@@ -304,12 +339,24 @@ impl OrbisApp {
                         self.cam = CamState::Searching;
                     }
                 }
-                CamEvent::Connected(info) => self.cam = CamState::Connected(info),
+                CamEvent::Connected(info) => {
+                    self.cam = CamState::Connected(info);
+                    let restore = self.saved.camera_settings();
+                    if !restore.is_empty() {
+                        self.push_log(format!("Restoring {} camera settings", restore.len()));
+                        let _ = self.cam_cmd.send(CamCmd::Set(restore));
+                    }
+                }
                 CamEvent::Problem(why) => {
                     self.cam = CamState::Problem(why);
-                    self.exposure = None;
+                    self.cam_values = None;
                 }
-                CamEvent::Exposure(e) => self.exposure = Some(e),
+                CamEvent::Settings { values, choices } => {
+                    self.cam_values = Some(values);
+                    if let Some(c) = choices {
+                        self.cam_choices = c;
+                    }
+                }
                 CamEvent::Photo { path, preview, thumb } => {
                     self.test_shot_busy = false;
                     if let Some(img) = preview {
@@ -321,6 +368,7 @@ impl OrbisApp {
                         self.thumbs.push(Thumb { tex, path });
                     }
                 }
+                CamEvent::CaptureFailed => self.test_shot_busy = false,
                 CamEvent::Log(msg) => self.push_log(msg),
             }
         }
@@ -530,33 +578,78 @@ impl OrbisApp {
     fn camera_panel(&mut self, ui: &mut Ui) {
         ui.heading("Camera");
         ui.add_space(4.0);
-        match (&self.cam, &self.exposure) {
-            (CamState::Connected(_), Some(e)) => {
-                egui::Grid::new("exposure").num_columns(2).spacing([12.0, 3.0]).show(ui, |ui| {
-                    for (k, v) in [
-                        ("Mode", &e.mode),
-                        ("Aperture", &e.aperture),
-                        ("Shutter", &e.shutter),
-                        ("ISO", &e.iso),
-                        ("Records", &e.records),
-                    ] {
-                        ui.label(k);
-                        ui.strong(v);
+        match (&self.cam, &self.cam_values) {
+            (CamState::Connected(_), Some(values)) => {
+                let editable = self.scan.is_none();
+                let mut changes = Vec::new();
+                egui::Grid::new("camera-settings").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+                    for s in Setting::ALL {
+                        ui.label(s.label());
+                        let current = values.get(s);
+                        let text = current.map(|v| s.value_name(v)).unwrap_or_else(|| "—".into());
+                        let choices = self.cam_choices.get(s);
+                        if choices.is_empty() || !editable {
+                            ui.strong(text);
+                        } else {
+                            egui::ComboBox::from_id_salt(s.label())
+                                .selected_text(text)
+                                .width(190.0)
+                                .height(420.0)
+                                .show_ui(
+                                ui,
+                                |ui| {
+                                    for &v in choices {
+                                        if ui.selectable_label(current == Some(v), s.value_name(v)).clicked()
+                                            && current != Some(v)
+                                        {
+                                            changes.push((s, v));
+                                        }
+                                    }
+                                },
+                            );
+                        }
                         ui.end_row();
                     }
                 });
+                if !changes.is_empty() {
+                    self.saved.remember_camera(&changes);
+                    let _ = self.cam_cmd.send(CamCmd::Set(changes));
+                }
+
+                // Hints for consistent photogrammetry photos.
                 let mut tips = Vec::new();
-                if !e.mode.starts_with('M') {
-                    tips.push("Use M mode so every photo has the same exposure.");
+                if values.get(Setting::Mode) != Some(fuji::ffi::XSDK_AE_OFF) {
+                    tips.push("Mode M keeps the exposure identical for every photo.");
                 }
-                if e.iso.starts_with("auto") {
-                    tips.push("Set a fixed ISO; auto ISO changes brightness between shots.");
+                if values.get(Setting::Iso).is_some_and(|v| v < 0) {
+                    tips.push("Auto ISO changes brightness between shots: pick a fixed ISO.");
                 }
-                if e.records == "RAW only" {
-                    tips.push("RAW only: no preview. Choose RAW + JPEG.");
+                if values.get(Setting::WhiteBalance).is_some_and(|v| matches!(v, 0x0002 | 0x8020 | 0x8021)) {
+                    tips.push("Auto white balance shifts colours: pick a fixed one.");
                 }
-                for t in tips {
+                if values.get(Setting::FilmSimulation).is_some_and(|v| (6..=10).contains(&v) || (12..=15).contains(&v)) {
+                    tips.push("Black & white film simulation: textures will have no colour.");
+                }
+                if values.get(Setting::Quality) == Some(fuji::ffi::SDK_IMAGEQUALITY_RAW) {
+                    tips.push("RAW only gives no preview: choose RAW + JPEG.");
+                }
+                if values.get(Setting::Focus) == Some(fuji::ffi::SDK_FOCUS_AFC) {
+                    tips.push("AF-C refocuses constantly: use AF-S, or focus once and switch to MF.");
+                }
+                for t in &tips {
                     ui.label(RichText::new(format!("💡 {t}")).small().color(AMBER));
+                }
+                if ui
+                    .add_enabled(editable, egui::Button::new("✨ Photogrammetry settings"))
+                    .on_hover_text(
+                        "M mode, ISO 160, daylight white balance, Provia colours, RAW + JPEG Fine.\n\
+                         Aperture and shutter stay as they are: set them for your light.",
+                    )
+                    .clicked()
+                {
+                    let preset = fuji::settings::photogrammetry_preset();
+                    self.saved.remember_camera(&preset);
+                    let _ = self.cam_cmd.send(CamCmd::Set(preset));
                 }
             }
             (CamState::Connected(_), None) => {
@@ -577,7 +670,8 @@ impl OrbisApp {
     fn turntable_panel(&mut self, ui: &mut Ui) {
         ui.heading("Turntable");
         ui.add_space(4.0);
-        let pos = self.table_deg.map(|d| format!("{d:.1}°")).unwrap_or_else(|| "—".into());
+        // 0–360°: after a 2-ring scan the table is "at 720°", which is 0°.
+        let pos = self.table_deg.map(|d| format!("{:.1}°", d.rem_euclid(360.0))).unwrap_or_else(|| "—".into());
         ui.horizontal(|ui| {
             ui.label(RichText::new(pos).size(28.0).strong());
             if self.moving {
@@ -663,6 +757,9 @@ impl OrbisApp {
         let plan = view.map(|s| s.plan).unwrap_or_else(|| self.saved.scan.plan());
         let done: Vec<u32> = view.map(|s| s.done.clone()).unwrap_or_else(|| vec![0; plan.rings as usize]);
         let current = self.scan.as_ref().and_then(|s| s.current);
+        // Dots are drawn in scan angles (0° at the top), so the needle must
+        // be relative to where the scan started, not the table's own zero.
+        let origin = view.map(|s| s.origin_deg).unwrap_or(0.0);
 
         let (title, sub) = match (&self.scan, &self.last_scan) {
             (Some(s), _) => {
@@ -688,7 +785,7 @@ impl OrbisApp {
                     rings: plan.rings,
                     done: &done,
                     current,
-                    table_degrees: self.table_deg,
+                    table_degrees: self.table_deg.map(|d| d - origin),
                     center_title: title,
                     center_sub: sub,
                 },

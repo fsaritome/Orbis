@@ -20,6 +20,9 @@
 //! `sdk/bin`).
 
 pub mod ffi;
+pub mod settings;
+
+pub use settings::{Choices, Setting, Values};
 
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -31,6 +34,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use ffi::*;
 
 const DLL: &str = "XAPI.dll";
+/// Half-press attempts before shooting without focus lock.
+const AF_ATTEMPTS: u32 = 3;
 
 /// Locate the folder holding `XAPI.dll`.
 pub fn find_sdk_dir() -> Result<PathBuf> {
@@ -93,6 +98,21 @@ struct Fns {
     get_sensitivity: FnGetLong,
     get_media_record: FnGetLong,
     set_media_record: FnSetLong,
+    cap_ae_mode: FnCapList,
+    set_ae_mode: FnSetLong,
+    cap_shutter: FnCapShutter,
+    set_shutter: FnSetShutterSpeed,
+    cap_sensitivity: FnCapList,
+    set_sensitivity: FnSetLong,
+    cap_aperture: FnCapAperture,
+    set_aperture: FnSetLong,
+    get_lens_zoom_pos: FnGetLong,
+    cap_wb: FnCapList,
+    set_wb: FnSetLong,
+    get_wb: FnGetLong,
+    set_prop: FnSetProp1,
+    get_prop: FnGetProp1,
+    cap_prop: FnCapProp2,
 }
 
 /// The loaded SDK. Calls `XSDK_Exit` when dropped.
@@ -153,6 +173,21 @@ impl Sdk {
             get_sensitivity: sym!("XSDK_GetSensitivity"),
             get_media_record: sym!("XSDK_GetMediaRecord"),
             set_media_record: sym!("XSDK_SetMediaRecord"),
+            cap_ae_mode: sym!("XSDK_CapAEMode"),
+            set_ae_mode: sym!("XSDK_SetAEMode"),
+            cap_shutter: sym!("XSDK_CapShutterSpeed"),
+            set_shutter: sym!("XSDK_SetShutterSpeed"),
+            cap_sensitivity: sym!("XSDK_CapSensitivity"),
+            set_sensitivity: sym!("XSDK_SetSensitivity"),
+            cap_aperture: sym!("XSDK_CapAperture"),
+            set_aperture: sym!("XSDK_SetAperture"),
+            get_lens_zoom_pos: sym!("XSDK_GetLensZoomPos"),
+            cap_wb: sym!("XSDK_CapWBMode"),
+            set_wb: sym!("XSDK_SetWBMode"),
+            get_wb: sym!("XSDK_GetWBMode"),
+            set_prop: sym!("XSDK_SetProp"),
+            get_prop: sym!("XSDK_GetProp"),
+            cap_prop: sym!("XSDK_CapProp"),
         };
         // Like Fujifilm's ReleaseButton sample, pass NULL: the SDK finds its
         // model modules itself.
@@ -277,24 +312,32 @@ impl Exposure {
 
 /// Human shutter speed from the SDK's microsecond-ish code.
 pub fn shutter_text(us: i32) -> String {
-    const DENOMS: [f64; 40] = [
-        32000.0, 16000.0, 8000.0, 6400.0, 5000.0, 4000.0, 3200.0, 2500.0, 2000.0, 1600.0, 1250.0, 1000.0, 800.0,
-        640.0, 500.0, 400.0, 320.0, 250.0, 200.0, 160.0, 125.0, 100.0, 80.0, 60.0, 50.0, 40.0, 30.0, 25.0, 20.0,
-        15.0, 13.0, 10.0, 8.0, 6.0, 5.0, 4.0, 3.0, 2.5, 2.0, 1.6,
+    // Marked third-stop speeds as printed on Fujifilm dials and menus.
+    const FRACTIONS: [&str; 45] = [
+        "32000", "25000", "20000", "16000", "13000", "10000", "8000", "6400", "5000", "4000", "3200", "2500",
+        "2000", "1600", "1250", "1000", "800", "640", "500", "400", "320", "250", "200", "160", "125", "100", "80",
+        "60", "50", "40", "30", "25", "20", "15", "13", "10", "8", "6", "5", "4", "3", "2.5", "2", "1.6", "1.3",
     ];
+    const SECONDS: [&str; 16] =
+        ["1", "1.3", "1.6", "2", "2.5", "3", "4", "5", "6", "8", "10", "13", "15", "20", "25", "30"];
+    let nearest = |names: &[&str], x: f64| -> String {
+        names
+            .iter()
+            .min_by(|a, b| {
+                let da = (a.parse::<f64>().unwrap().ln() - x.ln()).abs();
+                let db = (b.parse::<f64>().unwrap().ln() - x.ln()).abs();
+                da.total_cmp(&db)
+            })
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+    };
     match us {
         XSDK_SHUTTER_BULB => "bulb".into(),
         XSDK_SHUTTER_UNKNOWN => "—".into(),
-        v if v >= 1_000_000 => format!("{:.1}\"", v as f64 / 1e6),
-        v => {
-            let d = 1e6 / v as f64;
-            let nearest = DENOMS
-                .iter()
-                .min_by(|a, b| (a.ln() - d.ln()).abs().total_cmp(&(b.ln() - d.ln()).abs()))
-                .copied()
-                .unwrap_or(d);
-            format!("1/{nearest}")
-        }
+        // The SDK uses powers of two internally (1/125 = 7812 µs = 1/128), so
+        // map to the nearest marked speed in log space.
+        v if v >= 900_000 => format!("{}\"", nearest(&SECONDS, v as f64 / 1e6)),
+        v => format!("1/{}", nearest(&FRACTIONS, 1e6 / v as f64)),
     }
 }
 
@@ -405,16 +448,52 @@ impl Camera<'_> {
     /// Take a picture. `autofocus` = half-press first (S1 → S2); without it
     /// the camera shoots with the current focus (use with MF).
     pub fn shoot(&self, autofocus: bool) -> Result<Shot> {
-        let mode = if autofocus { XSDK_RELEASE_S2_S1OFF } else { XSDK_RELEASE_SHOOT_S1OFF };
-        let (mut opt, mut af) = (0, XSDK_RELEASE_OK);
-        let ret = unsafe { (self.sdk.f.release)(self.h, mode, &mut opt, &mut af) };
-        if ret != XSDK_COMPLETE {
-            // Make sure the shutter button isn't left half-pressed.
-            let (mut o, mut a) = (0, 0);
-            unsafe { (self.sdk.f.release)(self.h, XSDK_RELEASE_CANCEL, &mut o, &mut a) };
-            self.call("XSDK_Release", ret)?;
+        // Like Fujifilm's ReleaseButton sample: half-press (S1) first so the
+        // camera focuses, then full press + release (S2, S1 off). `shot_opt`
+        // is the number of frames and must be 1.
+        let release = |mode: Long, api: &str| -> Result<Long> {
+            let (mut shot_opt, mut status) = (1, XSDK_RELEASE_OK);
+            let ret = unsafe { (self.sdk.f.release)(self.h, mode, &mut shot_opt, &mut status) };
+            if ret != XSDK_COMPLETE {
+                let err = anyhow!("{api} failed: {}", self.sdk.last_error(self.h));
+                // Never leave the shutter button half-pressed.
+                let (mut o, mut s) = (1, 0);
+                unsafe { (self.sdk.f.release)(self.h, XSDK_RELEASE_CANCEL, &mut o, &mut s) };
+                return Err(err);
+            }
+            Ok(status)
+        };
+
+        if !autofocus {
+            release(XSDK_RELEASE_SHOOT_S1OFF, "XSDK_Release(SHOOT)")?;
+            return Ok(Shot { focus_ok: true });
         }
-        Ok(Shot { focus_ok: af != XSDK_RELEASE_AF_FAILURE })
+        // Autofocus can miss in dim light; try a few times before giving up.
+        let mut focus_ok = false;
+        for attempt in 0..AF_ATTEMPTS {
+            let af = release(XSDK_RELEASE_S1ON, "XSDK_Release(S1 focus)")?;
+            if af != XSDK_RELEASE_AF_FAILURE {
+                focus_ok = true;
+                break;
+            }
+            if attempt + 1 < AF_ATTEMPTS {
+                let (mut o, mut s) = (1, 0);
+                unsafe { (self.sdk.f.release)(self.h, XSDK_RELEASE_N_S1OFF, &mut o, &mut s) };
+                sleep(Duration::from_millis(300));
+            }
+        }
+        if !focus_ok {
+            // In AF-S with focus priority (the X-T4 default) the camera
+            // silently refuses to fire without focus lock, so don't try.
+            let (mut o, mut s) = (1, 0);
+            unsafe { (self.sdk.f.release)(self.h, XSDK_RELEASE_N_S1OFF, &mut o, &mut s) };
+            bail!(
+                "autofocus failed {AF_ATTEMPTS}× (too dark, no contrast, or too close). Add light, \
+                 or focus once, set the camera to MF and switch off \"Autofocus before every photo\""
+            );
+        }
+        release(XSDK_RELEASE_S2_S1OFF, "XSDK_Release(S2 shoot)")?;
+        Ok(Shot { focus_ok })
     }
 
     /// Fetch the next image from the transfer buffer, if any.
@@ -469,6 +548,101 @@ impl Camera<'_> {
         self.device_info().is_ok()
     }
 
+    /// Two-pass list query: count first, then the values.
+    fn list(&self, api: &str, mut f: impl FnMut(*mut Long, *mut Long) -> Long) -> Result<Vec<i32>> {
+        let mut n: Long = 0;
+        self.call(api, f(&mut n, ptr::null_mut()))?;
+        if n <= 0 {
+            return Ok(Vec::new());
+        }
+        let mut v = vec![0; n as usize];
+        self.call(api, f(&mut n, v.as_mut_ptr()))?;
+        v.truncate(n.max(0) as usize);
+        Ok(v)
+    }
+
+    fn get_prop(&self, code: Long) -> Result<i32> {
+        let mut v = 0;
+        self.call("XSDK_GetProp", unsafe { (self.sdk.f.get_prop)(self.h, code, 1, &mut v) })?;
+        Ok(v)
+    }
+
+    /// Current value of one setting.
+    pub fn get(&self, s: Setting) -> Result<i32> {
+        let f = &self.sdk.f;
+        match s {
+            Setting::Mode => self.get_long("XSDK_GetAEMode", f.get_ae_mode),
+            Setting::Aperture => self.get_long("XSDK_GetAperture", f.get_aperture),
+            Setting::Shutter => {
+                let (mut v, mut bulb) = (0, 0);
+                self.call("XSDK_GetShutterSpeed", unsafe { (f.get_shutter_speed)(self.h, &mut v, &mut bulb) })?;
+                Ok(v)
+            }
+            Setting::Iso => self.get_long("XSDK_GetSensitivity", f.get_sensitivity),
+            Setting::WhiteBalance => self.get_long("XSDK_GetWBMode", f.get_wb),
+            Setting::Focus => self.get_prop(API_CODE_GET_FOCUS_MODE),
+            Setting::Quality => self.get_prop(API_CODE_GET_IMAGE_QUALITY),
+            Setting::FilmSimulation => self.get_prop(API_CODE_GET_FILM_SIMULATION),
+        }
+    }
+
+    /// Change one setting. The camera must be in PC priority (it is after
+    /// [`Sdk::open_first`]); some values need a matching mode (e.g. shutter
+    /// speeds only in M and S).
+    pub fn set(&self, s: Setting, v: i32) -> Result<()> {
+        let f = &self.sdk.f;
+        let h = self.h;
+        let (api, ret) = unsafe {
+            match s {
+                Setting::Mode => ("XSDK_SetAEMode", (f.set_ae_mode)(h, v)),
+                Setting::Aperture => ("XSDK_SetAperture", (f.set_aperture)(h, v)),
+                Setting::Shutter => ("XSDK_SetShutterSpeed", (f.set_shutter)(h, v, 0)),
+                Setting::Iso => ("XSDK_SetSensitivity", (f.set_sensitivity)(h, v)),
+                Setting::WhiteBalance => ("XSDK_SetWBMode", (f.set_wb)(h, v)),
+                Setting::Focus => ("SetFocusMode", (f.set_prop)(h, API_CODE_SET_FOCUS_MODE, 1, v)),
+                Setting::Quality => ("SetImageQuality", (f.set_prop)(h, API_CODE_SET_IMAGE_QUALITY, 1, v)),
+                Setting::FilmSimulation => {
+                    ("SetFilmSimulationMode", (f.set_prop)(h, API_CODE_SET_FILM_SIMULATION, 1, v))
+                }
+            }
+        };
+        self.call(api, ret).with_context(|| format!("setting {} to {}", s.label(), s.value_name(v)))
+    }
+
+    /// Values each setting accepts right now. Settings whose list can't be
+    /// queried are left out (their current value is still shown).
+    pub fn choices(&self) -> Choices {
+        let f = &self.sdk.f;
+        let h = self.h;
+        let mut out = Vec::new();
+        let mut add = |s: Setting, r: Result<Vec<i32>>| {
+            if let Ok(v) = r {
+                if !v.is_empty() {
+                    out.push((s, v));
+                }
+            }
+        };
+        add(Setting::Mode, self.list("XSDK_CapAEMode", |n, v| unsafe { (f.cap_ae_mode)(h, n, v) }));
+        let zoom = self.get_long("XSDK_GetLensZoomPos", f.get_lens_zoom_pos).unwrap_or(0);
+        add(Setting::Aperture, self.list("XSDK_CapAperture", |n, v| unsafe { (f.cap_aperture)(h, zoom, n, v) }));
+        let mut bulb = 0;
+        add(Setting::Shutter, self.list("XSDK_CapShutterSpeed", |n, v| unsafe { (f.cap_shutter)(h, n, v, &mut bulb) }));
+        add(Setting::Iso, self.list("XSDK_CapSensitivity", |n, v| unsafe { (f.cap_sensitivity)(h, n, v) }));
+        add(Setting::WhiteBalance, self.list("XSDK_CapWBMode", |n, v| unsafe { (f.cap_wb)(h, n, v) }));
+        add(
+            Setting::Focus,
+            self.list("CapFocusMode", |n, v| unsafe { (f.cap_prop)(h, API_CODE_CAP_FOCUS_MODE, 2, n, v) }),
+        );
+        add(Setting::Quality, Ok(settings::QUALITIES.to_vec()));
+        add(Setting::FilmSimulation, Ok(settings::FILM_SIMULATIONS.to_vec()));
+        Choices(out)
+    }
+
+    /// Current value of every setting.
+    pub fn values(&self) -> Values {
+        Values(Setting::ALL.iter().map(|&s| (s, self.get(s).ok())).collect())
+    }
+
     pub fn priority_is_pc(&self) -> Result<bool> {
         Ok(self.get_long("XSDK_GetPriorityMode", self.sdk.f.get_priority_mode)? == XSDK_PRIORITY_PC)
     }
@@ -492,7 +666,8 @@ mod tests {
         assert_eq!(shutter_text(7812), "1/125"); // XSDK_SHUTTER_1_125
         assert_eq!(shutter_text(244), "1/4000"); // XSDK_SHUTTER_1_4000
         assert_eq!(shutter_text(775), "1/1250");
-        assert_eq!(shutter_text(1_000_000), "1.0\"");
+        assert_eq!(shutter_text(1_000_000), "1\"");
+        assert_eq!(shutter_text(2_000_000), "2\"");
         assert_eq!(shutter_text(-1), "bulb");
     }
 

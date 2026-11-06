@@ -10,10 +10,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use egui::ColorImage;
+use fuji::{Choices, Setting, Values};
 
 pub enum CamCmd {
     /// Take one picture and save it as `<stem>.<ext>` (one file per format).
     Capture { stem: PathBuf, autofocus: bool, reply: Sender<Result<Capture, String>> },
+    /// Change settings, in this order (e.g. mode before shutter speed).
+    Set(Vec<(Setting, i32)>),
 }
 
 /// What a capture produced.
@@ -30,23 +33,16 @@ pub struct CamInfo {
     pub firmware: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct ExposureView {
-    pub mode: String,
-    pub aperture: String,
-    pub shutter: String,
-    pub iso: String,
-    pub records: String,
-}
-
 pub enum CamEvent {
     Searching,
     Connected(CamInfo),
     /// Not usable right now; the text says why and what to do.
     Problem(String),
-    Exposure(ExposureView),
+    /// Current settings, and (when refreshed) what each one accepts.
+    Settings { values: Values, choices: Option<Choices> },
     /// A photo was saved. Images are already scaled for display.
     Photo { path: PathBuf, preview: Option<ColorImage>, thumb: Option<ColorImage> },
+    CaptureFailed,
     Log(String),
 }
 
@@ -79,13 +75,15 @@ impl Emitter {
 }
 
 /// Fail any capture requests that arrive while there is no camera.
-fn refuse_pending(cmds: &Receiver<CamCmd>, why: &str, wait: Duration) -> bool {
+fn refuse_pending(cmds: &Receiver<CamCmd>, out: &Emitter, why: &str, wait: Duration) -> bool {
     let until = Instant::now() + wait;
     while Instant::now() < until {
         match cmds.recv_timeout(Duration::from_millis(100)) {
             Ok(CamCmd::Capture { reply, .. }) => {
                 let _ = reply.send(Err(format!("camera not ready: {why}")));
+                out.send(CamEvent::CaptureFailed);
             }
+            Ok(CamCmd::Set(_)) => out.send(CamEvent::Log(format!("Camera: can't change settings: {why}"))),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return false,
         }
@@ -119,7 +117,7 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
             Err(e) => {
                 let msg = friendly(&e);
                 out.send(CamEvent::Problem(msg.clone()));
-                if !refuse_pending(&cmds, &msg, Duration::from_secs(10)) {
+                if !refuse_pending(&cmds, &out, &msg, Duration::from_secs(10)) {
                     return;
                 }
                 continue;
@@ -135,7 +133,7 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
                 }
                 out.send(CamEvent::Problem(msg.clone()));
                 // `sdk` is dropped (XSDK_Exit) at the end of this iteration.
-                if !refuse_pending(&cmds, &msg, RETRY) {
+                if !refuse_pending(&cmds, &out, &msg, RETRY) {
                     return;
                 }
                 continue;
@@ -147,18 +145,30 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
         let lens = cam.lens().unwrap_or_default();
         out.send(CamEvent::Log(format!("Camera connected: {} with {}", info.0, if lens.is_empty() { "no lens info" } else { &lens })));
         out.send(CamEvent::Connected(CamInfo { model: info.0, lens, firmware: info.1 }));
-        send_exposure(&cam, &out);
+        send_settings(&cam, &out, true);
 
         // Connected: serve commands, refresh settings, watch for unplugging.
         let mut next_refresh = Instant::now() + REFRESH;
+        let mut refreshes = 0u32;
         loop {
             match cmds.recv_timeout(Duration::from_millis(200)) {
                 Ok(CamCmd::Capture { stem, autofocus, reply }) => {
                     let result = capture(&cam, &stem, autofocus, &out).map_err(|e| format!("{e:#}"));
                     if let Err(e) = &result {
                         out.send(CamEvent::Log(format!("Camera: shot failed: {e}")));
+                        out.send(CamEvent::CaptureFailed);
                     }
                     let _ = reply.send(result);
+                }
+                Ok(CamCmd::Set(changes)) => {
+                    for (s, v) in changes {
+                        match cam.set(s, v) {
+                            Ok(()) => out.send(CamEvent::Log(format!("Camera: {} → {}", s.label(), s.value_name(v)))),
+                            Err(e) => out.send(CamEvent::Log(format!("Camera: {e:#}"))),
+                        }
+                    }
+                    // Choices depend on the mode (e.g. shutter speeds in M).
+                    send_settings(&cam, &out, true);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -169,28 +179,16 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
                     out.send(CamEvent::Log("Camera disconnected".into()));
                     break;
                 }
-                send_exposure(&cam, &out);
+                // Values every 2 s; full choice lists every 20 s (lens swaps).
+                refreshes += 1;
+                send_settings(&cam, &out, refreshes.is_multiple_of(10));
             }
         }
     }
 }
 
-fn send_exposure(cam: &fuji::Camera<'_>, out: &Emitter) {
-    let Ok(e) = cam.exposure() else { return };
-    let records = match cam.media_record() {
-        Ok(1) => "RAW + JPEG",
-        Ok(2) => "RAW only",
-        Ok(3) => "JPEG",
-        Ok(4) => "PC only",
-        _ => "?",
-    };
-    out.send(CamEvent::Exposure(ExposureView {
-        mode: e.ae_mode_name().to_owned(),
-        aperture: e.aperture_text(),
-        shutter: e.shutter_text(),
-        iso: e.iso_text(),
-        records: records.to_owned(),
-    }));
+fn send_settings(cam: &fuji::Camera<'_>, out: &Emitter, with_choices: bool) {
+    out.send(CamEvent::Settings { values: cam.values(), choices: with_choices.then(|| cam.choices()) });
 }
 
 fn capture(cam: &fuji::Camera<'_>, stem: &Path, autofocus: bool, out: &Emitter) -> anyhow::Result<Capture> {
@@ -258,6 +256,17 @@ mod tests {
         assert_eq!(p.size, [PREVIEW_PX as usize, 853]);
         assert_eq!(t.size[0], THUMB_PX as usize);
         assert!((t.size[1] as i32 - 133).abs() <= 1);
+    }
+
+    /// `ORBIS_TEST_JPEG=path cargo test -p orbis real_jpeg -- --ignored`
+    #[test]
+    #[ignore]
+    fn real_jpeg_decodes() {
+        let path = std::env::var("ORBIS_TEST_JPEG").expect("set ORBIS_TEST_JPEG");
+        let data = std::fs::read(&path).unwrap();
+        let err = image::load_from_memory_with_format(&data, image::ImageFormat::Jpeg).err();
+        let (p, t) = decode_previews(&data);
+        assert!(p.is_some() && t.is_some(), "decode failed: {err:?}");
     }
 
     #[test]

@@ -29,6 +29,8 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         count: u32,
     },
+    /// Every setting with its current value and the values it accepts.
+    Settings,
     /// Save any images still waiting in the camera's transfer buffer.
     Drain {
         #[arg(long, default_value = "scans/test")]
@@ -79,18 +81,36 @@ fn main() -> Result<()> {
                 let fired = t.elapsed();
                 let images = cam.wait_images(Duration::from_secs(20))?;
                 for img in images {
-                    let path = out.join(format!("shot_{:03}_{}.{}", n, img.name.replace(['/', '\\'], "_"), img.extension()));
+                    // The SDK's internal name already carries an extension
+                    // ("DSCF0001.raf"); keep the stem only.
+                    let stem = img.name.rsplit_once('.').map_or(img.name.as_str(), |(s, _)| s).replace(['/', '\\'], "_");
+                    let path = out.join(format!("shot_{n:03}_{stem}.{}", img.extension()));
                     std::fs::write(&path, &img.data)?;
                     println!(
-                        "{n}/{count}: {} ({:.1} MB, {}×{}){}",
+                        "{n}/{count}: {} ({:.1} MB){}",
                         path.display(),
                         img.data.len() as f64 / 1e6,
-                        img.width,
-                        img.height,
                         if shot.focus_ok { "" } else { "  ⚠ autofocus failed" }
                     );
                 }
                 println!("    release {:.2} s, total {:.2} s", fired.as_secs_f64(), t.elapsed().as_secs_f64());
+            }
+        }
+        Cmd::Settings => {
+            let values = cam.values();
+            let choices = cam.choices();
+            for s in fuji::Setting::ALL {
+                let cur = values.get(s).map(|v| s.value_name(v)).unwrap_or_else(|| "?".into());
+                let list = choices.get(s);
+                println!("{:16} {cur}", s.label());
+                if !list.is_empty() {
+                    let names: Vec<String> = list.iter().map(|&v| s.value_name(v)).collect();
+                    let mut unique = names.clone();
+                    unique.sort();
+                    unique.dedup();
+                    let dupes = if unique.len() < names.len() { "  ⚠ duplicate names" } else { "" };
+                    println!("{:16} {} choices: {}{dupes}", "", names.len(), names.join(", "));
+                }
             }
         }
         Cmd::Drain { out } => {

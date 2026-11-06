@@ -47,7 +47,8 @@ pub enum Event {
     Disconnected(String),
     Status { degrees: f64, moving: bool, enabled: bool },
     ButtonPressed,
-    ScanStarted { plan: ScanPlan, dir: Option<PathBuf> },
+    /// `origin_deg`: table angle that is the scan's 0°.
+    ScanStarted { plan: ScanPlan, dir: Option<PathBuf>, origin_deg: f64 },
     /// A photo position is done (dry run: no files).
     Shot { ring: u32, index: u32, angle: f64, files: Vec<PathBuf> },
     /// Ring `next` (0-based) is next; waiting for the user to move the camera.
@@ -344,7 +345,8 @@ impl Worker {
                 plan.angle_step()
             )),
         }
-        self.emit(Event::ScanStarted { plan, dir });
+        let origin_deg = self.geo.steps_to_degrees(origin);
+        self.emit(Event::ScanStarted { plan, dir, origin_deg });
     }
 
     fn scan_has_work(&self) -> bool {

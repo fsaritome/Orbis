@@ -158,3 +158,38 @@ pub type FnGetShutterSpeed = unsafe extern "C" fn(XSDK_HANDLE, *mut Long, *mut L
 pub type FnSetShutterSpeed = unsafe extern "C" fn(XSDK_HANDLE, Long, Long) -> Long;
 /// `XSDK_Cap*`-style list query: (handle, count out, values out or null).
 pub type FnCapList = unsafe extern "C" fn(XSDK_HANDLE, *mut Long, *mut Long) -> Long;
+/// `XSDK_CapShutterSpeed`: (handle, count, values, bulb capable).
+pub type FnCapShutter = unsafe extern "C" fn(XSDK_HANDLE, *mut Long, *mut Long, *mut Long) -> Long;
+/// `XSDK_CapAperture`: (handle, zoom position, count, values).
+pub type FnCapAperture = unsafe extern "C" fn(XSDK_HANDLE, Long, *mut Long, *mut Long) -> Long;
+
+// The *Prop functions are C-variadic. On x64 Windows, variadic integer and
+// pointer arguments are passed exactly like fixed ones, so each use gets a
+// fixed-arity signature. `lAPIParam` is the number of following arguments.
+pub type FnSetProp1 = unsafe extern "C" fn(XSDK_HANDLE, Long, Long, Long) -> Long;
+pub type FnGetProp1 = unsafe extern "C" fn(XSDK_HANDLE, Long, Long, *mut Long) -> Long;
+pub type FnCapProp2 = unsafe extern "C" fn(XSDK_HANDLE, Long, Long, *mut Long, *mut Long) -> Long;
+
+// Model-dependent property codes (XAPIOpt.H), valid for the X-T4.
+pub const API_CODE_SET_FILM_SIMULATION: Long = 0x2121;
+pub const API_CODE_GET_FILM_SIMULATION: Long = 0x2122;
+pub const API_CODE_SET_IMAGE_QUALITY: Long = 0x2129;
+pub const API_CODE_GET_IMAGE_QUALITY: Long = 0x2130;
+pub const API_CODE_SET_FOCUS_MODE: Long = 0x2201;
+pub const API_CODE_GET_FOCUS_MODE: Long = 0x2202;
+pub const API_CODE_CAP_FOCUS_MODE: Long = 0x2209;
+
+pub const SDK_FOCUS_MANUAL: Long = 0x0001;
+pub const SDK_FOCUS_AFS: Long = 0x8001;
+pub const SDK_FOCUS_AFC: Long = 0x8002;
+
+pub const SDK_IMAGEQUALITY_RAW: Long = 1;
+pub const SDK_IMAGEQUALITY_FINE: Long = 2;
+pub const SDK_IMAGEQUALITY_NORMAL: Long = 3;
+pub const SDK_IMAGEQUALITY_RAW_FINE: Long = 4;
+pub const SDK_IMAGEQUALITY_RAW_NORMAL: Long = 5;
+pub const SDK_IMAGEQUALITY_SUPERFINE: Long = 6;
+pub const SDK_IMAGEQUALITY_RAW_SUPERFINE: Long = 7;
+
+pub const SDK_FILMSIMULATION_PROVIA: Long = 1;
+pub const SDK_WB_DAYLIGHT: Long = 0x0004;
