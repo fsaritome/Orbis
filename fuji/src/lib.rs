@@ -83,6 +83,8 @@ struct Fns {
     open_ex: FnOpenEx,
     close: FnClose,
     get_error_number: FnGetErrorNumber,
+    /// Why the last call failed (bit flags); missing in older SDKs.
+    get_error_details: Option<FnGetLong>,
     get_version_string: FnGetVersionString,
     get_device_info: FnGetDeviceInfo,
     get_lens_info: FnGetLensInfo,
@@ -162,6 +164,7 @@ impl Sdk {
             open_ex: sym!("XSDK_OpenEx"),
             close: sym!("XSDK_Close"),
             get_error_number: sym!("XSDK_GetErrorNumber"),
+            get_error_details: unsafe { lib.get::<FnGetLong>(b"XSDK_GetErrorDetails\0") }.ok().map(|s| *s),
             get_version_string: sym!("XSDK_GetVersionString"),
             get_device_info: sym!("XSDK_GetDeviceInfo"),
             get_lens_info: sym!("XSDK_GetLensInfo"),
@@ -265,7 +268,22 @@ impl Sdk {
     fn last_error(&self, h: XSDK_HANDLE) -> String {
         let (mut api, mut code) = (0, 0);
         unsafe { (self.f.get_error_number)(h, &mut api, &mut code) };
-        format!("{} ({code:#06x}, API {api:#06x})", errcode_name(code))
+        let mut msg = format!("{} ({code:#06x}, API {api:#06x})", errcode_name(code));
+        let why = self.error_details(h);
+        if !why.is_empty() {
+            msg.push_str(&format!(": {}", why.join(", ")));
+        }
+        msg
+    }
+
+    /// The camera's reasons for the last failure, in words.
+    fn error_details(&self, h: XSDK_HANDLE) -> Vec<&'static str> {
+        let Some(f) = self.f.get_error_details else { return Vec::new() };
+        let mut bits = 0;
+        if unsafe { f(h, &mut bits) } != XSDK_COMPLETE {
+            return Vec::new();
+        }
+        ERROR_DETAILS.iter().filter(|(b, _)| bits & b != 0).map(|(_, s)| *s).collect()
     }
 }
 
@@ -471,6 +489,18 @@ impl Camera<'_> {
     /// Take a picture. `autofocus` = half-press first (S1 → S2); without it
     /// the camera shoots with the current focus (use with MF).
     pub fn shoot(&self, autofocus: bool) -> Result<Shot> {
+        // The X-T4 sometimes refuses a release right after the previous
+        // photo (SHOOT_ERROR while it is still busy): wait and try once more.
+        match self.shoot_once(autofocus) {
+            Err(e) if !e.to_string().starts_with("autofocus failed") => {
+                sleep(Duration::from_millis(1500));
+                self.shoot_once(autofocus).map_err(|e2| anyhow!("{e2} (also on the first try: {e})"))
+            }
+            r => r,
+        }
+    }
+
+    fn shoot_once(&self, autofocus: bool) -> Result<Shot> {
         // Like Fujifilm's ReleaseButton sample: half-press (S1) first so the
         // camera focuses, then full press + release (S2, S1 off). `shot_opt`
         // is the number of frames and must be 1.

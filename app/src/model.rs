@@ -214,7 +214,7 @@ impl ModelPanel {
             if line.chars().count() > 70 {
                 line = format!("{}…", line.chars().take(70).collect::<String>());
             }
-            ui.label(RichText::new(line).small().weak().monospace());
+            ui.label(RichText::new(line).size(12.0).weak().monospace());
             ui.horizontal(|ui| {
                 if ui.button("■ Cancel").clicked() {
                     job.cancel.store(true, Ordering::Relaxed);

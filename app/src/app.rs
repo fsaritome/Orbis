@@ -1107,10 +1107,10 @@ impl eframe::App for OrbisApp {
             self.top_bar(ui);
             ui.add_space(2.0);
         });
-        egui::Panel::bottom("log").resizable(true).default_size(110.0).show(ui, |ui| {
+        egui::Panel::bottom("log").resizable(true).default_size(150.0).show(ui, |ui| {
             egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
                 for line in &self.log {
-                    ui.label(RichText::new(line).monospace().small());
+                    ui.label(RichText::new(line).monospace().size(13.0));
                 }
             });
         });

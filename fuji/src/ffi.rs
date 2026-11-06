@@ -226,3 +226,17 @@ pub type FnCapFocusArea = unsafe extern "C" fn(XSDK_HANDLE, Long, Long, Long, *m
 pub const XSDK_RELEASE_INSTANTAF: Long = 0xA000;
 pub const XSDK_RELEASE_N_INSTANTAF: Long = 0x0010;
 pub const SDK_WB_DAYLIGHT: Long = 0x0004;
+
+/// XSDK_GetErrorDetails bits (why a release was refused).
+pub const ERROR_DETAILS: [(Long, &str); 10] = [
+    (0x0001, "shutter button half-pressed (S1)"),
+    (0x0002, "AE lock active"),
+    (0x0004, "AF lock active"),
+    (0x0008, "instant AF running"),
+    (0x0010, "AF-ON pressed"),
+    (0x0020, "still shooting"),
+    (0x0040, "self-timer countdown"),
+    (0x0080, "recording video"),
+    (0x0100, "live view running"),
+    (0x0200, "previous photo not transferred yet"),
+];
