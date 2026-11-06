@@ -1,0 +1,18 @@
+[package]
+name = "fuji"
+description = "Safe Rust wrapper for the Fujifilm X SDK (XAPI.dll): tethered capture and image transfer"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+libloading = "0.8"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader", "Win32_Foundation"] }
+
+[[bin]]
+name = "cam"
+path = "src/bin/cam.rs"

@@ -34,7 +34,7 @@ so it only needs power.
 | `rig-protocol/` | Messages shared by PC and firmware (`no_std`, postcard + COBS) | ✅ |
 | `firmware/` | ESP32 firmware: motor on core 1, Wi-Fi/TCP/discovery/serial on core 0 | ✅ tested on hardware |
 | `rig/` | PC library + `rig` CLI to drive the turntable | ✅ |
-| `fuji-sdk-sys/`, `fuji/` | Bindings + safe wrapper for Fujifilm `XAPI.dll` | next |
+| `fuji/` | Bindings + safe wrapper for Fujifilm `XAPI.dll`, and the `cam` test CLI | ✅ connects; capture awaits tether mode test |
 | `app/` | `orbis` desktop app (egui): scan settings, angle wheel, turntable control, dry runs | ✅ turntable part |
 | `sdk/` | Your copy of the Fujifilm SDK (git-ignored) | local only |
 
@@ -110,11 +110,30 @@ From then on it only needs power. `rig` finds it on the network by itself.
 cargo run --release -p orbis
 ```
 
-Scan settings (detail preset, rings, settle time) with time and disk
-estimates, an angle wheel showing progress per ring, turntable controls
-(jog, zero, speed, mechanics) and a dry run that turns through a whole
-scan without photos. The BOOT button on the turntable starts/stops a scan
-and confirms ring changes. Camera preview and capture come next.
+- **Scan:** name, detail preset, rings, settle time, time/disk estimate.
+  *Start scan* turns, settles, shoots and saves every position;
+  *Dry run* turns only.
+- **Camera:** model, lens, exposure mode, aperture, shutter, ISO, with tips
+  (use M, fixed ISO, RAW + JPEG), autofocus toggle and a test shot.
+- **Preview:** the latest photo large, thumbnails below (click to view,
+  double-click to open).
+- **Angle wheel:** progress per ring and the live table angle.
+- **Turntable:** jog, zero, hold, speed, mechanics.
+
+The BOOT button on the turntable starts/stops a scan and confirms ring
+changes. A failed photo pauses the scan; fix the cause and press Resume
+to retry that position.
+
+Photos go to `Pictures\Orbis\<date>_<time>_<name>\ring1_001.JPG …`
+together with `scan.json` (angle, ring, files and time of every photo).
+
+### Camera setup (X-T4)
+
+- MENU → wrench → CONNECTION SETTING → CONNECTION MODE →
+  **USB TETHER SHOOTING AUTO**, then replug USB.
+- Exposure **M**, fixed ISO, image quality **RAW + JPEG** (or JPEG).
+- Test without the app: `cargo run -p fuji --bin cam -- info` /
+  `-- shoot`.
 
 Only one program can talk to the turntable at a time: close the app before
 using `rig`, and vice versa.
@@ -149,8 +168,10 @@ sdk/doc/       MANUAL/SDK_ProgrammingReference.pdf
 1. ✅ Protocol, turntable CLI
 2. ✅ Wi-Fi firmware (discovery, TCP, serial setup, dedicated motor core)
 3. ✅ Flashed and tested on the real hardware (Wi-Fi, discovery, motor)
-4. ⬜ `fuji-sdk-sys` / `fuji`: detect camera, lock settings, shoot, download, live view
-5. ⬜ `scanner`: rings × shots, settle time, retakes, `scan.json`, resume
-6. ⬜ GUI (egui): detail presets, angle wheel, photo preview + thumbnails,
-   turntable jog, past scans
+4. 🟡 `fuji`: detect, open, shoot, transfer (connects; capture untested
+   until the camera is in tether mode)
+5. 🟡 Scans with photos, `scan.json`, retry on failure (untested with camera)
+6. ✅ GUI: detail presets, angle wheel, photo preview + thumbnails,
+   camera panel, turntable jog
+7. ⬜ Retake a single photo, set exposure from the app, live view, past scans
 7. ⬜ Optional: sharpness check, launch Meshroom/RealityCapture after a scan
