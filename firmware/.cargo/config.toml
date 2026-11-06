@@ -12,4 +12,5 @@ rustflags = [
 target = "xtensa-esp32-none-elf"
 
 [unstable]
-build-std = ["core"]
+# The Wi-Fi stack needs `alloc`.
+build-std = ["alloc", "core"]

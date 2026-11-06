@@ -2,7 +2,7 @@
 
 *Put it on the plate, press start, get a 3D-ready photo set.*
 
-Orbis is an automated photogrammetry rig: an ESP32-driven turntable plus a
+Orbis is an automated photogrammetry rig: a wireless ESP32 turntable plus a
 tethered Fujifilm X camera, orchestrated by a Rust app on the PC. The output
 is a folder of evenly spaced photos, ready for RealityCapture, Metashape or
 Meshroom.
@@ -15,34 +15,37 @@ Rust rewrite of two earlier projects:
   stepped the turntable with AccelStepper and fired the camera through that
   TCP server over Wi-Fi.
 
-The new design inverts control: the **PC runs the scan** and talks to the
-camera over USB (SDK) and to the turntable over USB serial. The ESP32 is a
-small motion controller. There's no Wi-Fi to configure, no TCP hop, and the
-images are transferred straight to the PC.
+The new design inverts control: the **PC runs the scan**. The camera hangs
+on USB, because that's the only reliable way to get full-size photos and
+settings out of it. The turntable is a small motion controller on **Wi-Fi**,
+so it only needs power.
 
 ```
-          ┌──────────── PC (Rust) ─────────────┐
- Camera ◄─┤ fuji (SDK, planned)   scanner (planned) │
-   USB    │ rig  ── postcard/COBS over serial ─┼─► ESP32 ─► ST-4045 driver ─► stepper
-          └────────────────────────────────────┘    USB
+                ┌──────────────── PC (Rust) ────────────────┐
+ Camera ◄──USB──┤ fuji (SDK)        scanner + GUI           │
+                │ rig ──── TCP 7878 / UDP 7879 discovery ───┼──Wi-Fi──► ESP32 ─► ST-4045 ─► stepper
+                └───────────────────────────────────────────┘        (USB only for setup)
 ```
 
 ## Layout
 
 | Path | What | Status |
 |---|---|---|
-| `rig-protocol/` | Message types shared by PC and firmware (`no_std`, postcard + COBS) | ✅ |
-| `firmware/` | ESP32 turntable firmware (esp-hal 1.2, bare metal) | ✅ builds |
-| `rig/` | PC library + `rig` CLI to drive the turntable | ✅ builds |
-| `fuji-sdk-sys/`, `fuji/` | Bindings + safe wrapper for Fujifilm `XAPI.dll` | planned |
-| `scanner/` | Scan orchestrator: rotate → settle → shoot → download | planned |
+| `rig-protocol/` | Messages shared by PC and firmware (`no_std`, postcard + COBS) | ✅ |
+| `firmware/` | ESP32 firmware: motor on core 1, Wi-Fi/TCP/discovery/serial on core 0 | ✅ builds, untested on hardware |
+| `rig/` | PC library + `rig` CLI to drive the turntable | ✅ |
+| `fuji-sdk-sys/`, `fuji/` | Bindings + safe wrapper for Fujifilm `XAPI.dll` | next |
+| `scanner/` | Scan orchestrator + egui GUI with preview | planned |
+| `sdk/` | Your copy of the Fujifilm SDK (git-ignored) | local only |
 
 ## Hardware
 
-- ESP32 dev board (ESP32-D0WD-V3, CP210x USB bridge)
+- ESP32-WROOM dev board (ESP32-D0WD-V3, CP210x USB bridge)
 - **ST-4045-A1** microstep driver, 12–40 V supply on DC+/DC−
 - NEMA 17 stepper (A+ green, A− black, B+ red, B− blue)
 - Fujifilm X-T4 on USB
+- Power for the ESP32: USB charger, or a 5 V buck converter from the
+  driver's supply into the board's 5V/VIN pin
 
 ### Driver DIP switches
 
@@ -76,18 +79,29 @@ Prerequisites: Rust (stable) for the PC side; for the firmware,
 ```powershell
 # PC side
 cargo test --workspace
-cargo run -p rig -- ports
 
 # Firmware (separate toolchain, run inside firmware/)
 . $env:USERPROFILE\export-esp.ps1
 cd firmware
 cargo build --release
-espflash flash --chip esp32 --port COM5 target\xtensa-esp32-none-elf\release\firmware
+espflash flash --chip esp32 --port COM5 target\xtensa-esp32-none-elf\release\orbis-firmware
 ```
 
 **Flashing tip:** if `espflash` stops at "Connecting...", hold **BOOT**, tap
 **EN**, then release BOOT. The board's auto-reset circuit is unreliable; a
 10 µF capacitor between EN and GND fixes it for good.
+
+## First-time setup
+
+Once, over USB, tell the turntable your Wi-Fi (2.4 GHz). It's stored in the
+ESP32's flash and survives reflashing the firmware.
+
+```powershell
+cargo run -p rig -- --usb wifi "MyNetwork" --password "secret"
+cargo run -p rig -- discover        # after ~10 s: shows its IP
+```
+
+From then on it only needs power. `rig` finds it on the network by itself.
 
 ## Using the turntable
 
@@ -98,21 +112,29 @@ cargo run -p rig -- goto 0             # absolute
 cargo run -p rig -- spin --shots 36    # dry-run scan, no camera
 cargo run -p rig -- speed 1600 3200    # steps/s, steps/s²
 cargo run -p rig -- --gear-ratio 3 rotate 360   # belt/gear drive
+cargo run -p rig -- --usb netinfo      # Wi-Fi state, over USB
+cargo run -p rig -- --host 192.168.178.42 status
 ```
 
 ## Fujifilm SDK
 
-The Fujifilm X SDK (`XAPI.dll`, `XAPI.H`, `FTLPTP*.dll`) is proprietary and
-**must not be committed**. Get it from
-<https://fujifilm-x.com/global/special/developer/> and place the x64
-files in `sdk/` (git-ignored).
+The Fujifilm X SDK (`XAPI.dll`, `FTLPTP*.dll`, `FF00xxAPI.dll`, headers) is
+proprietary and **must not be committed**. Get it from
+<https://fujifilm-x.com/global/special/developer/> and copy into `sdk/`:
+
+```
+sdk/bin/       REDISTRIBUTABLES/Windows/64bit/*.dll
+sdk/include/   HEADERS/XAPI.H, XAPIOpt.H, X-T4.h
+sdk/doc/       MANUAL/SDK_ProgrammingReference.pdf
+```
 
 ## Roadmap
 
-1. ✅ Protocol, firmware, turntable CLI
-2. ⬜ Flash the firmware and test the motor on the real hardware
-3. ⬜ `fuji-sdk-sys` / `fuji`: detect camera, shoot, download image (tethered)
-4. ⬜ `scanner`: full scan (rings × shots, settle time, locked exposure,
-   `scan.json` metadata, resume)
-5. ⬜ GUI (egui) with live progress and thumbnails
-6. ⬜ Optional: launch Meshroom/COLMAP when a scan finishes
+1. ✅ Protocol, turntable CLI
+2. ✅ Wi-Fi firmware (discovery, TCP, serial setup, dedicated motor core)
+3. ⬜ Flash and test on the real hardware
+4. ⬜ `fuji-sdk-sys` / `fuji`: detect camera, lock settings, shoot, download, live view
+5. ⬜ `scanner`: rings × shots, settle time, retakes, `scan.json`, resume
+6. ⬜ GUI (egui): detail presets, angle wheel, photo preview + thumbnails,
+   turntable jog, past scans
+7. ⬜ Optional: sharpness check, launch Meshroom/RealityCapture after a scan

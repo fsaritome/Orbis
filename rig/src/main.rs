@@ -1,18 +1,24 @@
-//! `rig` — drive the turntable from the command line (no camera needed).
+//! `rig`: drive the Orbis turntable from the command line (no camera needed).
 
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use rig::{Geometry, Rig};
 
 #[derive(Parser)]
-#[command(about = "Control the ESP32 photogrammetry turntable")]
+#[command(about = "Control the Orbis photogrammetry turntable")]
 struct Cli {
-    /// Serial port, e.g. COM5. Auto-detected if omitted.
+    /// Turntable IP address (Wi-Fi). Found automatically if omitted.
+    #[arg(long, global = true, conflicts_with = "port")]
+    host: Option<String>,
+    /// Use USB serial instead of Wi-Fi, e.g. COM5.
     #[arg(long, global = true)]
     port: Option<String>,
+    /// Use USB serial and auto-detect the port.
+    #[arg(long, global = true, conflicts_with_all = ["host", "port"])]
+    usb: bool,
     /// Full steps per motor revolution.
     #[arg(long, global = true, default_value_t = 200)]
     motor_steps: u32,
@@ -30,6 +36,17 @@ struct Cli {
 enum Cmd {
     /// List serial ports.
     Ports,
+    /// Look for turntables on the network.
+    Discover,
+    /// Store Wi-Fi credentials on the turntable (normally over --usb).
+    Wifi {
+        ssid: String,
+        /// Leave out for an open network.
+        #[arg(long, default_value = "")]
+        password: String,
+    },
+    /// Show the turntable's network state.
+    Netinfo,
     /// Check the firmware answers.
     Ping,
     /// Show position, speed and enable state.
@@ -37,11 +54,20 @@ enum Cmd {
     /// Declare the current position as 0°.
     Zero,
     /// Turn by a relative angle in degrees (negative = backwards).
-    Rotate { degrees: f64 },
+    Rotate {
+        #[arg(allow_hyphen_values = true)]
+        degrees: f64,
+    },
     /// Turn to an absolute angle in degrees.
-    Goto { degrees: f64 },
+    Goto {
+        #[arg(allow_hyphen_values = true)]
+        degrees: f64,
+    },
     /// Move by raw motor steps.
-    Steps { steps: i32 },
+    Steps {
+        #[arg(allow_hyphen_values = true)]
+        steps: i32,
+    },
     /// Stop a running move.
     Stop,
     /// Energise the motor.
@@ -65,17 +91,36 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let geo = Geometry { motor_steps: cli.motor_steps, microsteps: cli.microsteps, gear_ratio: cli.gear_ratio };
 
-    if let Cmd::Ports = cli.cmd {
-        for (name, desc) in rig::list_ports()? {
-            println!("{name:8} {desc}");
+    match cli.cmd {
+        Cmd::Ports => {
+            for (name, desc) in rig::list_serial_ports()? {
+                println!("{name:8} {desc}");
+            }
+            return Ok(());
         }
-        return Ok(());
+        Cmd::Discover => {
+            let found = rig::discover(Duration::from_secs(2))?;
+            if found.is_empty() {
+                bail!("no turntable answered (is it on Wi-Fi? `rig --usb netinfo` shows its state)");
+            }
+            for f in found {
+                println!("{f}");
+            }
+            return Ok(());
+        }
+        _ => {}
     }
 
-    let mut rig = match &cli.port {
-        Some(p) => Rig::open(p)?,
-        None => Rig::open_auto()?,
+    let mut rig = if let Some(host) = &cli.host {
+        Rig::connect_host(host)?
+    } else if let Some(port) = &cli.port {
+        Rig::open_serial(port)?
+    } else if cli.usb {
+        Rig::open_serial(&rig::find_serial_port()?)?
+    } else {
+        Rig::open_auto()?
     };
+    eprintln!("connected via {}", rig.description());
 
     let report = |rig: &mut Rig| -> Result<()> {
         let s = rig.status()?;
@@ -84,7 +129,22 @@ fn main() -> Result<()> {
     };
 
     match cli.cmd {
-        Cmd::Ports => unreachable!(),
+        Cmd::Ports | Cmd::Discover => unreachable!(),
+        Cmd::Wifi { ssid, password } => {
+            rig.set_wifi(&ssid, &password)?;
+            println!("saved; the turntable is restarting and joining \"{ssid}\"");
+            println!("check with `rig discover` in ~10 s, or `rig --usb netinfo`");
+        }
+        Cmd::Netinfo => {
+            let n = rig.net_info()?;
+            if n.ssid.is_empty() {
+                println!("no Wi-Fi configured (set it with `rig --usb wifi <ssid> --password <pw>`)");
+            } else if n.connected {
+                println!("connected to \"{}\" as {}", n.ssid, n.ip);
+            } else {
+                println!("configured for \"{}\" but not connected (wrong password? out of range?)", n.ssid);
+            }
+        }
         Cmd::Ping => println!("turntable firmware answered"),
         Cmd::Status => {
             let s = rig.status()?;

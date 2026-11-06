@@ -1,35 +1,62 @@
-//! Wire protocol between the PC and the ESP32 turntable controller.
+//! Wire protocol between the PC and the Orbis turntable (ESP32).
 //!
 //! Every message is serialized with `postcard` and framed with COBS, so a
 //! frame ends with a single `0x00` byte and never contains `0x00` otherwise.
-//! That lets either side resynchronise after garbage on the line (e.g. the
-//! ESP32 ROM bootloader banner printed at 115200 baud after a reset).
+//! The same framing is used on both transports:
+//!
+//! * **TCP** on [`TCP_PORT`]: the normal way to talk to the turntable.
+//! * **USB serial** at [`BAUD_RATE`]: first-time Wi-Fi setup and fallback.
+//!   COBS lets the reader resynchronise after garbage on the line, such as
+//!   the ESP32 ROM bootloader banner printed after a reset.
+//!
+//! Discovery: the PC broadcasts [`DISCOVERY_MAGIC`] to UDP
+//! [`DISCOVERY_PORT`]; each turntable answers with an encoded [`Announce`]
+//! (plain postcard, no COBS). The sender address of that answer is the
+//! turntable's IP.
 //!
 //! The firmware only knows motor steps. Converting degrees to steps
 //! (motor steps × microstepping × gear ratio) is the PC's job.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub use heapless::String;
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever a message changes incompatibly.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Serial baud rate used by the firmware (UART0, the USB bridge).
 pub const BAUD_RATE: u32 = 115_200;
 
+/// TCP port the turntable listens on.
+pub const TCP_PORT: u16 = 7878;
+
+/// UDP port for discovery broadcasts.
+pub const DISCOVERY_PORT: u16 = 7879;
+
+/// Payload of a discovery broadcast.
+pub const DISCOVERY_MAGIC: &[u8] = b"ORBIS?";
+
 /// Largest encoded frame, including the trailing `0x00`.
-pub const MAX_FRAME: usize = 64;
+pub const MAX_FRAME: usize = 160;
+
+/// Maximum Wi-Fi SSID length (IEEE 802.11).
+pub const SSID_MAX: usize = 32;
+/// Maximum WPA passphrase length.
+pub const PASSWORD_MAX: usize = 64;
+
+pub type Ssid = String<SSID_MAX>;
+pub type Password = String<PASSWORD_MAX>;
 
 /// PC → ESP32.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Request {
-    /// Echoed back in the matching [`Reply`].
+    /// Echoed back in the matching [`Reply`]. Never 0 (see [`EVENT_ID`]).
     pub id: u16,
     pub cmd: Command,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// Answered with [`Response::Pong`].
     Ping,
@@ -49,17 +76,23 @@ pub enum Command {
     SetMotion { max_speed: u32, accel: u32 },
     /// Energise (true) or release (false) the motor via the ENA input.
     Enable(bool),
+    /// Store Wi-Fi credentials in flash. Answered with `Ok`, after which
+    /// the turntable restarts and joins that network. An empty SSID clears
+    /// the stored network (serial only).
+    SetWifi { ssid: Ssid, password: Password },
+    /// Answered with [`Response::NetInfo`].
+    NetInfo,
 }
 
 /// ESP32 → PC.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Reply {
-    /// The `id` of the request this answers.
+    /// The `id` of the request this answers, or [`EVENT_ID`].
     pub id: u16,
     pub resp: Response,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Response {
     Ok,
     Pong { version: u16 },
@@ -78,6 +111,14 @@ pub enum Response {
     /// Unsolicited (sent with `id` = [`EVENT_ID`]): the physical button
     /// on the turntable was pressed. The PC uses it to start/stop a scan.
     ButtonPressed,
+    NetInfo {
+        /// Configured network, empty if none.
+        ssid: Ssid,
+        /// Joined the network and got an address.
+        connected: bool,
+        /// IPv4 address, `[0; 4]` if not connected.
+        ip: [u8; 4],
+    },
 }
 
 /// `Reply::id` used for unsolicited events. The PC never sends id 0.
@@ -85,7 +126,8 @@ pub const EVENT_ID: u16 = 0;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
-    /// A move is in progress; only `Status` and `Stop` are accepted.
+    /// A move is in progress; only `Status`, `Stop`, `Ping` and `NetInfo`
+    /// are accepted.
     Busy,
     /// The motor is disabled.
     Disabled,
@@ -93,6 +135,17 @@ pub enum ErrorCode {
     InvalidArgument,
     /// The frame could not be decoded.
     BadFrame,
+    /// Writing the settings to flash failed.
+    Storage,
+}
+
+/// Answer to a discovery broadcast.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct Announce {
+    pub version: u16,
+    pub tcp_port: u16,
+    /// Station MAC address, to tell several turntables apart.
+    pub mac: [u8; 6],
 }
 
 /// Encode `msg` as a COBS frame (ending in `0x00`) into `buf`.
@@ -123,14 +176,19 @@ impl<const N: usize> FrameAccumulator<N> {
         Self { buf: [0; N], len: 0, overflow: false }
     }
 
+    /// Forget any partially received frame.
+    pub fn reset(&mut self) {
+        self.len = 0;
+        self.overflow = false;
+    }
+
     /// Feed one byte. Returns a complete frame (including the trailing
     /// `0x00`) when the delimiter arrives. Over-long frames are dropped.
     pub fn push(&mut self, byte: u8) -> Option<&mut [u8]> {
         if byte == 0 {
             let len = self.len;
             let overflow = self.overflow;
-            self.len = 0;
-            self.overflow = false;
+            self.reset();
             if overflow || len == 0 {
                 return None;
             }
@@ -185,6 +243,13 @@ mod tests {
     }
 
     #[test]
+    fn longest_wifi_request_fits_a_frame() {
+        let ssid = Ssid::try_from("S".repeat(SSID_MAX).as_str()).unwrap();
+        let password = Password::try_from("p".repeat(PASSWORD_MAX).as_str()).unwrap();
+        roundtrip(Request { id: u16::MAX, cmd: Command::SetWifi { ssid, password } });
+    }
+
+    #[test]
     fn replies_roundtrip() {
         roundtrip(Reply { id: 2, resp: Response::Moved { position: i32::MIN } });
         roundtrip(Reply {
@@ -192,6 +257,22 @@ mod tests {
             resp: Response::Status { position: 12, moving: true, enabled: true, max_speed: u32::MAX, accel: 1 },
         });
         roundtrip(Reply { id: 4, resp: Response::Error(ErrorCode::Busy) });
+        roundtrip(Reply {
+            id: 5,
+            resp: Response::NetInfo {
+                ssid: Ssid::try_from("FRITZ!Box 7590").unwrap(),
+                connected: true,
+                ip: [192, 168, 178, 42],
+            },
+        });
+    }
+
+    #[test]
+    fn announce_roundtrip() {
+        let a = Announce { version: PROTOCOL_VERSION, tcp_port: TCP_PORT, mac: [1, 2, 3, 4, 5, 6] };
+        let mut buf = [0u8; 32];
+        let bytes = postcard::to_slice(&a, &mut buf).unwrap();
+        assert_eq!(postcard::from_bytes::<Announce>(bytes).unwrap(), a);
     }
 
     #[test]

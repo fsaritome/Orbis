@@ -8,5 +8,7 @@ license.workspace = true
 [dependencies]
 rig-protocol = { path = "../rig-protocol", features = ["std"] }
 serialport = "4"
+postcard = { version = "1", features = ["use-std"] }
+if-addrs = "0.13"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
