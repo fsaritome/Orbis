@@ -43,6 +43,15 @@ tests) runs in a visible terminal tab, not as hidden background output.
   `open_application("Orbis")` launches a new instance. To look at an
   already running window, just take a screenshot.
 
+## Installer
+
+`& .\scripts\package.ps1` (visible terminal tab, Orbis closed) builds
+`target\installer\Orbis-Setup-<version>.exe` with Inno Setup 6
+(`installer\orbis.iss`). It bundles the proprietary SDK DLLs from `sdk\bin`; the license page makes
+users accept `installer\fujifilm-sdk-notice.txt` (required by Fujifilm's SDK
+agreement 2(b), 3.2, 5.3). Keep that page. Never upload the setup (GitHub
+Release etc.) without the user's OK.
+
 ## Environment
 
 - Windows 11, PowerShell. Repo at `C:\GIT\Orbis`; GitHub `fsaritome/Orbis`

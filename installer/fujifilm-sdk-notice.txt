@@ -1,0 +1,36 @@
+
+======================================================================
+FUJIFILM CAMERA CONTROL SDK: THIRD-PARTY COMPONENT
+======================================================================
+
+Orbis includes runtime libraries of the FUJIFILM Digital Camera Control
+SDK (XAPI.dll, FTLPTP.dll, FTLPTPIP.dll, FF00xxAPI.dll, XSDK.DAT), copyright
+FUJIFILM Corporation. They are distributed only as part of Orbis, in
+object code form, under FUJIFILM's SDK license agreement:
+
+    https://www.fujifilm-x.com/global/camera-control-sdk/agreement/
+
+These libraries are NOT covered by the MIT license above. By installing
+Orbis you agree to be bound by the obligations of that agreement as they
+apply to the libraries, in particular:
+
+  * You may use the libraries only to run Orbis. You may not copy,
+    modify, distribute, sublicense, rent or otherwise transfer them
+    separately from Orbis.
+  * You may not reverse engineer, decompile or disassemble them.
+  * You may not subject them to any open source license (such as GPL
+    or LGPL).
+  * You will comply with all applicable export control laws.
+  * You will not alter or remove copyright or other proprietary notices
+    in them.
+
+FUJIFILM does not provide Orbis and does not offer any support for it.
+Please don't contact FUJIFILM about Orbis; use
+https://github.com/fsaritome/Orbis/issues instead.
+
+WARRANTY EXCLUSION: the libraries are provided by FUJIFILM "AS IS",
+without warranty of any kind, express or implied, including warranties of
+merchantability, fitness for a particular purpose and non-infringement.
+FUJIFILM and its suppliers are not liable for any damages arising from
+the use of the libraries or of Orbis, including damage to cameras, lost
+images or lost data.

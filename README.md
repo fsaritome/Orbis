@@ -117,6 +117,28 @@ From then on it only needs power. `rig` finds it on the network by itself.
 cargo run --release -p orbis
 ```
 
+### Windows installer
+
+```powershell
+winget install JRSoftware.InnoSetup   # once
+.\scripts\package.ps1                 # -> target\installer\Orbis-Setup-<version>.exe
+```
+
+Builds `orbis`, `rig` and `cam` in release mode and packs them with the
+Fujifilm DLLs from your `sdk\bin` (so the SDK has to be there first). The
+setup installs per user, without an admin prompt, into
+`%LOCALAPPDATA%\Programs\Orbis`, with a Start-menu shortcut, an optional
+desktop shortcut, optionally `rig`/`cam` on PATH, and an uninstaller. The
+icon (`docs\img\orbis.ico`) comes from `tools\make-ico.ps1`.
+
+Fujifilm's [SDK agreement](https://www.fujifilm-x.com/global/camera-control-sdk/agreement/)
+allows shipping the `REDISTRIBUTABLE` DLLs inside an app like this, provided
+users accept the same obligations and are told Fujifilm offers no support or
+warranty. The setup's license page therefore shows the MIT license plus
+[installer/fujifilm-sdk-notice.txt](installer/fujifilm-sdk-notice.txt), which
+the user must accept. Refresh `sdk\bin` when Fujifilm releases bug fixes. The
+DLLs still never go into git: they're not under the MIT license.
+
 - **Scan:** name, detail preset, rings, settle time, time/disk estimate.
   *Start scan* turns, settles, shoots and saves every position;
   *Dry run* turns only.
