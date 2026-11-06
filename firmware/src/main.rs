@@ -70,9 +70,12 @@ async fn main(spawner: Spawner) -> ! {
     let timg0 = TimerGroup::new(p.TIMG0);
     esp_rtos::start(timg0.timer0, p.FROM_CPU_INTR0);
 
-    // Read stored Wi-Fi credentials before the second core starts using flash.
-    let mut flash = FlashStorage::new(p.FLASH).multicore_auto_park();
+    // All flash access happens here, before Wi-Fi and the second core run
+    // (see config.rs for why).
+    let mut flash = FlashStorage::new(p.FLASH);
+    config::apply_pending(&mut flash);
     let creds = config::load(&mut flash);
+    drop(flash);
 
     // Motor → core 1.
     let out = OutputConfig::default();
@@ -97,7 +100,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(serial::serial_tx_task(tx).unwrap());
 
     spawner.spawn(dispatch::move_done_task().unwrap());
-    spawner.spawn(config::config_task(flash).unwrap());
+    spawner.spawn(config::config_task().unwrap());
     spawner.spawn(button_task(Input::new(p.GPIO0, InputConfig::default().with_pull(Pull::Up))).unwrap());
 
     // Wi-Fi, if configured (`rig wifi` over USB sets it up).

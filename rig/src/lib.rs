@@ -295,12 +295,12 @@ impl Rig {
             match self.read_reply(deadline)? {
                 Some(reply) if reply.id == id => {
                     return match reply.resp {
-                        Response::Error(code) => Err(anyhow!("turntable refused {cmd:?}: {code:?}")),
+                        Response::Error(code) => Err(anyhow!("turntable refused {}: {code:?}", describe(&cmd))),
                         r => Ok(r),
                     };
                 }
                 Some(_) => {} // reply to an older, timed-out request
-                None => bail!("timed out waiting for reply to {cmd:?}"),
+                None => bail!("timed out waiting for reply to {}", describe(&cmd)),
             }
         }
     }
@@ -395,7 +395,7 @@ impl Rig {
         match self.request(cmd.clone(), timeout)? {
             Response::Moved { position } => Ok(position),
             Response::Stopped { position } => bail!("move was stopped at step {position}"),
-            r => bail!("unexpected answer to {cmd:?}: {r:?}"),
+            r => bail!("unexpected answer to {}: {r:?}", describe(&cmd)),
         }
     }
 
@@ -433,6 +433,14 @@ impl Rig {
             bail!("WPA passwords are at least 8 characters");
         }
         self.request(Command::SetWifi { ssid, password }, Duration::from_secs(5)).map(drop)
+    }
+}
+
+/// A command for messages and logs. Never includes secrets.
+fn describe(cmd: &Command) -> String {
+    match cmd {
+        Command::SetWifi { ssid, .. } => format!("SetWifi {{ ssid: {:?}, password: <hidden> }}", ssid.as_str()),
+        other => format!("{other:?}"),
     }
 }
 

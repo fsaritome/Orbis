@@ -12,3 +12,4 @@ postcard = { version = "1", features = ["use-std"] }
 if-addrs = "0.13"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+rpassword = "7.5.4"

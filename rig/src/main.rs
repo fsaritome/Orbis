@@ -39,11 +39,14 @@ enum Cmd {
     /// Look for turntables on the network.
     Discover,
     /// Store Wi-Fi credentials on the turntable (normally over --usb).
+    /// Asks for anything not given; the password prompt is hidden.
     Wifi {
-        ssid: String,
-        /// Leave out for an open network.
-        #[arg(long, default_value = "")]
-        password: String,
+        ssid: Option<String>,
+        #[arg(long)]
+        password: Option<String>,
+        /// The network has no password.
+        #[arg(long, conflicts_with = "password")]
+        open: bool,
     },
     /// Show the turntable's network state.
     Netinfo,
@@ -130,10 +133,36 @@ fn main() -> Result<()> {
 
     match cli.cmd {
         Cmd::Ports | Cmd::Discover => unreachable!(),
-        Cmd::Wifi { ssid, password } => {
+        Cmd::Wifi { ssid, password, open } => {
+            let ssid = match ssid {
+                Some(s) => s,
+                None => {
+                    print!("Wi-Fi name (2.4 GHz): ");
+                    std::io::Write::flush(&mut std::io::stdout())?;
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line)?;
+                    line.trim_end_matches(['\r', '\n']).to_owned()
+                }
+            };
+            if ssid.is_empty() {
+                bail!("no network name given");
+            }
+            let password = match (password, open) {
+                (Some(p), _) => p,
+                (None, true) => String::new(),
+                (None, false) => rpassword::prompt_password(format!("Password for \"{ssid}\" (hidden): "))?,
+            };
             rig.set_wifi(&ssid, &password)?;
-            println!("saved; the turntable is restarting and joining \"{ssid}\"");
-            println!("check with `rig discover` in ~10 s, or `rig --usb netinfo`");
+            println!("saved; the turntable is restarting and joining \"{ssid}\"...");
+            sleep(Duration::from_secs(12));
+            match rig::discover(Duration::from_secs(3)) {
+                Ok(found) if !found.is_empty() => {
+                    for f in found {
+                        println!("on the network: {f}");
+                    }
+                }
+                _ => println!("not found on the network yet; check `rig --usb netinfo` (wrong password? 5 GHz only?)"),
+            }
         }
         Cmd::Netinfo => {
             let n = rig.net_info()?;
