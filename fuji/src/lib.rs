@@ -22,6 +22,7 @@
 pub mod ffi;
 pub mod settings;
 
+pub use ffi::FocusArea;
 pub use settings::{Choices, Setting, Values};
 
 use std::ffi::CString;
@@ -112,6 +113,9 @@ struct Fns {
     get_wb: FnGetLong,
     set_prop: FnSetProp1,
     set_prop0: FnSetProp0,
+    focus_area_set: FnFocusArea,
+    focus_area_get: FnFocusArea,
+    focus_area_cap: FnCapFocusArea,
     get_prop: FnGetProp1,
     cap_prop: FnCapProp2,
 }
@@ -188,6 +192,9 @@ impl Sdk {
             get_wb: sym!("XSDK_GetWBMode"),
             set_prop: sym!("XSDK_SetProp"),
             set_prop0: sym!("XSDK_SetProp"),
+            focus_area_set: sym!("XSDK_SetProp"),
+            focus_area_get: sym!("XSDK_GetProp"),
+            focus_area_cap: sym!("XSDK_CapProp"),
             get_prop: sym!("XSDK_GetProp"),
             cap_prop: sym!("XSDK_CapProp"),
         };
@@ -242,7 +249,16 @@ impl Sdk {
                  Set CONNECTION MODE → USB TETHER SHOOTING AUTO in the camera menu"
             );
         }
-        cam.call("XSDK_SetPriorityMode", unsafe { (self.f.set_priority_mode)(h, XSDK_PRIORITY_PC) })?;
+        let take_control = || cam.call("XSDK_SetPriorityMode", unsafe { (self.f.set_priority_mode)(h, XSDK_PRIORITY_PC) });
+        if let Err(first) = take_control() {
+            // A session that ended without cleaning up (crash, killed
+            // process) can leave live view streaming, and the camera then
+            // answers BUSY. Stop it and try again.
+            unsafe { (self.f.set_prop0)(h, API_CODE_STOP_LIVE_VIEW, 0) };
+            sleep(Duration::from_millis(500));
+            while matches!(cam.read_next(), Ok(Some(ref i)) if i.is_live()) {}
+            take_control().map_err(|_| first)?;
+        }
         Ok(cam)
     }
 
@@ -579,6 +595,42 @@ impl Camera<'_> {
             newest = Some(data);
         }
         Ok(newest)
+    }
+
+    /// Current focus point (grid position and size).
+    pub fn focus_area(&self) -> Result<FocusArea> {
+        let mut a = FocusArea::default();
+        let ret = unsafe { (self.sdk.f.focus_area_get)(self.h, API_CODE_GET_FOCUS_AREA, 2, SDK_ITEM_DIRECTION_0, &mut a) };
+        self.call("GetFocusArea", ret)?;
+        Ok(a)
+    }
+
+    /// Smallest and largest focus point position/size the camera accepts.
+    pub fn focus_area_range(&self) -> Result<(FocusArea, FocusArea)> {
+        let (mut min, mut max) = (FocusArea::default(), FocusArea::default());
+        let ret = unsafe {
+            (self.sdk.f.focus_area_cap)(self.h, API_CODE_CAP_FOCUS_AREA, 3, SDK_ITEM_DIRECTION_0, &mut min, &mut max)
+        };
+        self.call("CapFocusArea", ret)?;
+        Ok((min, max))
+    }
+
+    /// Half-extents of the focus point grid: positions run from `-h..=h`
+    /// and `-v..=v` with (0, 0) in the centre. Depends on the camera's
+    /// NUMBER OF FOCUS POINTS setting (X-T4: 13×9 or 25×17).
+    pub fn focus_grid(&self) -> (i32, i32) {
+        match self.get_prop(API_CODE_GET_FOCUS_POINTS) {
+            Ok(1) => (6, 3),  // 13×7
+            Ok(2) => (12, 6), // 25×13
+            Ok(4) => (12, 8), // 25×17
+            _ => (6, 4),      // 13×9, measured on the X-T4
+        }
+    }
+
+    pub fn set_focus_area(&self, mut a: FocusArea) -> Result<()> {
+        let ret = unsafe { (self.sdk.f.focus_area_set)(self.h, API_CODE_SET_FOCUS_AREA, 2, SDK_ITEM_DIRECTION_0, &mut a) };
+        let (h, v, size) = (a.h, a.v, a.size);
+        self.call("SetFocusArea", ret).with_context(|| format!("focus point h={h} v={v} size={size}"))
     }
 
     /// Run autofocus once without taking a picture. In MF this uses the

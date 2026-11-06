@@ -173,6 +173,9 @@ pub struct OrbisApp {
     live_tex: Option<TextureHandle>,
     focusing: bool,
     focus_result: Option<bool>,
+    /// Focus frame to draw on the live view (photo coordinates 0..1).
+    focus_rect: Option<[f32; 4]>,
+    shut_down: bool,
     log: VecDeque<String>,
 }
 
@@ -208,6 +211,8 @@ impl OrbisApp {
             live_tex: None,
             focusing: false,
             focus_result: None,
+            focus_rect: None,
+            shut_down: false,
             log: VecDeque::new(),
         }
     }
@@ -397,6 +402,7 @@ impl OrbisApp {
                     self.focusing = false;
                     self.focus_result = Some(ok);
                 }
+                CamEvent::FocusPoint(r) => self.focus_rect = Some(r),
                 CamEvent::Log(msg) => self.push_log(msg),
             }
         }
@@ -842,7 +848,7 @@ impl OrbisApp {
             let label = if self.live_on { "■ Stop live view" } else { "◉ Live view" };
             if ui
                 .add_enabled(ready && self.scan.is_none(), egui::Button::new(label).selected(self.live_on))
-                .on_hover_text("See through the camera to frame the object and check focus")
+                .on_hover_text("See through the camera to frame the object. Click into the picture to focus there.")
                 .clicked()
             {
                 let _ = self.cam_cmd.send(CamCmd::LiveView(!self.live_on));
@@ -878,6 +884,40 @@ impl OrbisApp {
             let r = egui::Rect::from_center_size(rect.center(), img * scale);
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             ui.painter().image(tex.id(), r, uv, Color32::WHITE);
+
+            // The camera sends 4:3 frames with the 3:2 photo letterboxed
+            // inside; focus coordinates refer to the photo area.
+            let photo = if r.width() / r.height() < 1.5 {
+                egui::Rect::from_center_size(r.center(), egui::vec2(r.width(), r.width() / 1.5))
+            } else {
+                r
+            };
+            let hover = resp.hover_pos().filter(|p| photo.contains(*p));
+            if hover.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            }
+            if resp.clicked() {
+                if let Some(p) = resp.interact_pointer_pos().filter(|p| photo.contains(*p)) {
+                    let x = (p.x - photo.left()) / photo.width();
+                    let y = (p.y - photo.top()) / photo.height();
+                    self.focusing = true;
+                    self.focus_result = None;
+                    let _ = self.cam_cmd.send(CamCmd::FocusAt { x, y });
+                }
+            }
+            if let Some([fx, fy, fw, fh]) = self.focus_rect {
+                let fr = egui::Rect::from_min_size(
+                    egui::pos2(photo.left() + fx * photo.width(), photo.top() + fy * photo.height()),
+                    egui::vec2(fw * photo.width(), fh * photo.height()),
+                );
+                let color = match (self.focusing, self.focus_result) {
+                    (true, _) => Color32::WHITE,
+                    (false, Some(true)) => GREEN,
+                    (false, Some(false)) => RED,
+                    (false, None) => Color32::WHITE,
+                };
+                ui.painter().rect_stroke(fr, 2.0, egui::Stroke::new(2.0, color), egui::StrokeKind::Middle);
+            }
             let badge = egui::Rect::from_min_size(rect.left_top() + egui::vec2(10.0, 10.0), egui::vec2(58.0, 22.0));
             ui.painter().rect_filled(badge, 4.0, Color32::from_black_alpha(160));
             ui.painter().text(
@@ -1023,6 +1063,15 @@ impl OrbisApp {
 impl eframe::App for OrbisApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Closing: stop live view and hand the camera back before the
+        // process ends, or the camera stays busy until it's power-cycled.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.shut_down {
+            self.shut_down = true;
+            let (done_tx, done_rx) = mpsc::channel();
+            if self.cam_cmd.send(CamCmd::Shutdown(done_tx)).is_ok() {
+                let _ = done_rx.recv_timeout(Duration::from_secs(3));
+            }
+        }
         self.handle_events(&ctx);
 
         egui::Panel::top("top").show(ui, |ui| {

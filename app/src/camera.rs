@@ -21,6 +21,12 @@ pub enum CamCmd {
     LiveView(bool),
     /// Run autofocus once (also works in MF, like the AF-ON button).
     FocusNow,
+    /// Move the focus point to (x, y) in the photo (0..1, top-left
+    /// origin) and autofocus there.
+    FocusAt { x: f32, y: f32 },
+    /// Stop live view and give control back to the camera; answers on
+    /// the channel when done. Sent when the app closes.
+    Shutdown(Sender<()>),
 }
 
 /// What a capture produced.
@@ -52,6 +58,9 @@ pub enum CamEvent {
     LiveFrame(ColorImage),
     /// Result of [`CamCmd::FocusNow`]: focus locked or not.
     Focused(bool),
+    /// Where the focus point is, as a rectangle in photo coordinates
+    /// (0..1): left, top, width, height.
+    FocusPoint([f32; 4]),
     Log(String),
 }
 
@@ -93,7 +102,11 @@ fn refuse_pending(cmds: &Receiver<CamCmd>, out: &Emitter, why: &str, wait: Durat
                 out.send(CamEvent::CaptureFailed);
             }
             Ok(CamCmd::Set(_)) => out.send(CamEvent::Log(format!("Camera: can't change settings: {why}"))),
-            Ok(CamCmd::LiveView(_) | CamCmd::FocusNow) => out.send(CamEvent::Live(false)),
+            Ok(CamCmd::LiveView(_) | CamCmd::FocusNow | CamCmd::FocusAt { .. }) => out.send(CamEvent::Live(false)),
+            Ok(CamCmd::Shutdown(done)) => {
+                let _ = done.send(());
+                return false;
+            }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return false,
         }
@@ -174,16 +187,40 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
                     out.send(CamEvent::Live(live));
                 }
                 Ok(CamCmd::LiveView(_)) => out.send(CamEvent::Live(live)),
-                Ok(CamCmd::FocusNow) => {
-                    let ok = cam.focus_now().unwrap_or_else(|e| {
-                        out.send(CamEvent::Log(format!("Camera: focus: {e:#}")));
-                        false
-                    });
-                    out.send(CamEvent::Log(format!(
-                        "Camera: {}",
-                        if ok { "focus locked" } else { "autofocus couldn't lock (light? contrast?)" }
-                    )));
-                    out.send(CamEvent::Focused(ok));
+                Ok(CamCmd::FocusNow) => focus(&cam, &out),
+                Ok(CamCmd::FocusAt { x, y }) => {
+                    let (gh, gv) = cam.focus_grid();
+                    let (cols, rows) = (2 * gh + 1, 2 * gv + 1);
+                    let h = ((x.clamp(0.0, 0.999) * cols as f32) as i32 - gh).clamp(-gh, gh);
+                    let v = ((y.clamp(0.0, 0.999) * rows as f32) as i32 - gv).clamp(-gv, gv);
+                    let size = cam.focus_area().map(|a| a.size).unwrap_or(3);
+                    let area = fuji::FocusArea { h, v, size };
+                    let mut r = cam.set_focus_area(area);
+                    if r.is_err() && live {
+                        // Some bodies only accept it with live view paused.
+                        let _ = cam.stop_live_view();
+                        r = cam.set_focus_area(area);
+                        let _ = cam.start_live_view();
+                    }
+                    match r {
+                        Ok(()) => {
+                            out.send(CamEvent::FocusPoint(focus_rect(h, v, size, gh, gv)));
+                            focus(&cam, &out);
+                        }
+                        Err(e) => {
+                            out.send(CamEvent::Log(format!("Camera: {e:#}")));
+                            out.send(CamEvent::Focused(false));
+                        }
+                    }
+                }
+                Ok(CamCmd::Shutdown(done)) => {
+                    if live {
+                        let _ = cam.stop_live_view();
+                    }
+                    drop(cam); // gives priority back to the camera, closes
+                    drop(sdk);
+                    let _ = done.send(());
+                    return;
                 }
                 Ok(CamCmd::Capture { stem, autofocus, reply }) => {
                     // Live view frames share the transfer queue: pause it.
@@ -202,6 +239,12 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
                     let _ = reply.send(result);
                 }
                 Ok(CamCmd::Set(changes)) => {
+                    // The camera refuses most changes while streaming:
+                    // pause live view, apply, and restart it so the new
+                    // exposure/colours show up immediately.
+                    if live {
+                        let _ = cam.stop_live_view();
+                    }
                     for (s, v) in changes {
                         match cam.set(s, v) {
                             Ok(()) => out.send(CamEvent::Log(format!("Camera: {} → {}", s.label(), s.value_name(v)))),
@@ -210,6 +253,10 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
                     }
                     // Choices depend on the mode (e.g. shutter speeds in M).
                     send_settings(&cam, &out, true);
+                    if live && cam.start_live_view().is_err() {
+                        live = false;
+                        out.send(CamEvent::Live(false));
+                    }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
@@ -239,6 +286,29 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
             }
         }
     }
+}
+
+fn focus(cam: &fuji::Camera<'_>, out: &Emitter) {
+    let ok = cam.focus_now().unwrap_or_else(|e| {
+        out.send(CamEvent::Log(format!("Camera: focus: {e:#}")));
+        false
+    });
+    out.send(CamEvent::Log(format!(
+        "Camera: {}",
+        if ok { "focus locked" } else { "autofocus couldn't lock (light? contrast?)" }
+    )));
+    out.send(CamEvent::Focused(ok));
+}
+
+/// Focus point (grid cell h, v; field size 1–6) as a rectangle in photo
+/// coordinates. The field covers roughly `size` cells around its centre.
+fn focus_rect(h: i32, v: i32, size: i32, gh: i32, gv: i32) -> [f32; 4] {
+    let (cols, rows) = ((2 * gh + 1) as f32, (2 * gv + 1) as f32);
+    let (cw, ch) = (1.0 / cols, 1.0 / rows);
+    let cx = (h + gh) as f32 * cw + cw / 2.0;
+    let cy = (v + gv) as f32 * ch + ch / 2.0;
+    let k = 0.5 + 0.25 * size.clamp(1, 6) as f32;
+    [cx - cw * k / 2.0, cy - ch * k / 2.0, cw * k, ch * k]
 }
 
 fn send_settings(cam: &fuji::Camera<'_>, out: &Emitter, with_choices: bool) {
@@ -321,6 +391,17 @@ mod tests {
         let err = image::load_from_memory_with_format(&data, image::ImageFormat::Jpeg).err();
         let (p, t) = decode_previews(&data);
         assert!(p.is_some() && t.is_some(), "decode failed: {err:?}");
+    }
+
+    #[test]
+    fn focus_rect_is_centred_on_its_cell() {
+        // 13×9 grid: the centre cell is centred in the photo.
+        let [x, y, w, h] = focus_rect(0, 0, 3, 6, 4);
+        assert!((x + w / 2.0 - 0.5).abs() < 1e-6 && (y + h / 2.0 - 0.5).abs() < 1e-6);
+        // Top-left cell is centred half a cell in from the corner.
+        let [x, y, w, h] = focus_rect(-6, -4, 1, 6, 4);
+        assert!((x + w / 2.0 - 0.5 / 13.0).abs() < 1e-6);
+        assert!((y + h / 2.0 - 0.5 / 9.0).abs() < 1e-6);
     }
 
     #[test]

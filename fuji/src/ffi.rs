@@ -203,6 +203,25 @@ pub const SDK_LIVEVIEW_QUALITY_FINE: Long = 1;
 pub const SDK_LIVEVIEW_SIZE_L: Long = 1; // 1280 px
 pub const SDK_LIVEVIEW_MODE1: Long = 1;
 
+/// Focus point position on the camera's focus grid (`SDK_FocusArea`).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FocusArea {
+    pub h: Long,
+    pub v: Long,
+    pub size: Long,
+}
+
+pub const API_CODE_SET_FOCUS_AREA: Long = 0x2205;
+pub const API_CODE_GET_FOCUS_AREA: Long = 0x2206;
+pub const API_CODE_CAP_FOCUS_AREA: Long = 0x2235;
+pub const API_CODE_GET_FOCUS_POINTS: Long = 0x2258;
+pub const SDK_ITEM_DIRECTION_0: Long = 1;
+/// SetProp/GetProp(code, 2, angle, &FocusArea).
+pub type FnFocusArea = unsafe extern "C" fn(XSDK_HANDLE, Long, Long, Long, *mut FocusArea) -> Long;
+/// CapProp(code, 3, angle, &min, &max).
+pub type FnCapFocusArea = unsafe extern "C" fn(XSDK_HANDLE, Long, Long, Long, *mut FocusArea, *mut FocusArea) -> Long;
+
 /// One-shot autofocus while in MF (the AF-ON button).
 pub const XSDK_RELEASE_INSTANTAF: Long = 0xA000;
 pub const XSDK_RELEASE_N_INSTANTAF: Long = 0x0010;

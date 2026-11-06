@@ -31,6 +31,16 @@ enum Cmd {
     },
     /// Every setting with its current value and the values it accepts.
     Settings,
+    /// Show the focus point and the range the camera accepts; optionally
+    /// move it (`--h --v --size`).
+    FocusArea {
+        #[arg(long, allow_hyphen_values = true)]
+        h: Option<i32>,
+        #[arg(long, allow_hyphen_values = true)]
+        v: Option<i32>,
+        #[arg(long)]
+        size: Option<i32>,
+    },
     /// Run live view for a few seconds and save the last frame.
     Live {
         #[arg(long, default_value_t = 3)]
@@ -118,6 +128,16 @@ fn main() -> Result<()> {
                     let dupes = if unique.len() < names.len() { "  ⚠ duplicate names" } else { "" };
                     println!("{:16} {} choices: {}{dupes}", "", names.len(), names.join(", "));
                 }
+            }
+        }
+        Cmd::FocusArea { h, v, size } => {
+            println!("current : {:?}", cam.focus_area());
+            println!("range   : {:?}", cam.focus_area_range());
+            if h.is_some() || v.is_some() || size.is_some() {
+                let cur = cam.focus_area()?;
+                let new = fuji::ffi::FocusArea { h: h.unwrap_or(cur.h), v: v.unwrap_or(cur.v), size: size.unwrap_or(cur.size) };
+                cam.set_focus_area(new)?;
+                println!("set to  : {:?}", cam.focus_area());
             }
         }
         Cmd::Live { seconds, out } => {
