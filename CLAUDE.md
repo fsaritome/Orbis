@@ -47,7 +47,8 @@ tests) runs in a visible terminal tab, not as hidden background output.
 
 - Windows 11, PowerShell. Repo at `C:\GIT\Orbis`; GitHub `fsaritome/Orbis`
   (private).
-- ESP32 on **COM5** (CP210x, ESP32-D0WD-V3, MAC xx:xx:xx:xx:xx:xx).
+- ESP32 on **COM5** (CP210x, ESP32-D0WD-V3). Its IP comes from DHCP;
+  find it with `rig discover`.
 - Firmware toolchain: `. $env:USERPROFILE\export-esp.ps1` first; the
   firmware is its own workspace in `firmware/` (toolchain `esp`, target
   `xtensa-esp32-none-elf`). Build it from inside `firmware/`. PC crates

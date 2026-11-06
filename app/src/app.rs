@@ -1,7 +1,7 @@
 //! The Orbis window.
 //!
 //! ```text
-//! ┌ Orbis ─ ● Turntable 192.168.1.50 ─ ● Camera X-T4 ───────────────────┐
+//! ┌ Orbis ─ ● Turntable 192.168.1.50 ─ ● Camera X-T4 ──────────────────────┐
 //! │                                        │ SCAN  name, presets, rings,     │
 //! │   angle wheel        photo preview     │       estimate, Start / Dry run │
 //! │                                        │ CAMERA  exposure, AF, test shot │
