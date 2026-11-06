@@ -223,9 +223,25 @@ impl Sdk {
     }
 
     /// Number of cameras on USB.
+    /// Cameras on USB.
     pub fn detect(&self) -> Result<u32> {
+        self.detect_on(&Link::Usb)
+    }
+
+    /// Cameras reachable over `link` (the list `ENUM:<n>` opens from).
+    pub fn detect_on(&self, link: &Link) -> Result<u32> {
         let mut n: Long = 0;
-        let ret = unsafe { (self.f.detect)(XSDK_DSC_IF_USB, ptr::null_mut(), ptr::null_mut(), &mut n) };
+        let addr = match link {
+            Link::Wifi(ip) => Some(CString::new(ip.trim()).context("bad IP address")?),
+            _ => None,
+        };
+        let iface = match link {
+            Link::Usb => XSDK_DSC_IF_USB,
+            Link::Wifi(_) => XSDK_DSC_IF_WIFI_IP,
+            Link::WifiSearch => XSDK_DSC_IF_WIFI_LOCAL,
+        };
+        let p = addr.as_ref().map_or(ptr::null_mut(), |a| a.as_ptr() as *mut i8);
+        let ret = unsafe { (self.f.detect)(iface, p, ptr::null_mut(), &mut n) };
         if ret != XSDK_COMPLETE {
             bail!("XSDK_Detect failed: {}", self.last_error(ptr::null_mut()));
         }
@@ -234,11 +250,21 @@ impl Sdk {
 
     /// Open the first USB camera in tether mode and take control (PC priority).
     pub fn open_first(&self) -> Result<Camera<'_>> {
-        if self.detect()? == 0 {
-            bail!(
-                "no Fujifilm camera found on USB. Is it on, connected, and set to \
-                 CONNECTION MODE → USB TETHER SHOOTING AUTO?"
-            );
+        self.open(&Link::Usb)
+    }
+
+    /// Open the first camera on `link` in tether mode and take control.
+    pub fn open(&self, link: &Link) -> Result<Camera<'_>> {
+        if self.detect_on(link)? == 0 {
+            match link {
+                Link::Usb => bail!(
+                    "no Fujifilm camera found on USB. Is it on, connected, and set to CONNECTION MODE → USB TETHER SHOOTING AUTO?"
+                ),
+                Link::Wifi(ip) => bail!(
+                    "no camera answering at {ip}. Is it on, in PC CONNECTION MODE → WIRELESS TETHER SHOOTING FIXED, and connected to the Wi-Fi (lamp blinking orange or green)?"
+                ),
+                Link::WifiSearch => bail!("no camera found on the local network"),
+            }
         }
         let dev = CString::new("ENUM:0").unwrap();
         let mut h: XSDK_HANDLE = ptr::null_mut();
@@ -250,8 +276,7 @@ impl Sdk {
         let cam = Camera { sdk: self, h, mode };
         if mode & XSDK_DSC_MODE_TETHER == 0 {
             bail!(
-                "camera is connected but not in tether mode (mode flags {mode:#x}). \
-                 Set CONNECTION MODE → USB TETHER SHOOTING AUTO in the camera menu"
+                "camera is connected but not in tether mode (mode flags {mode:#x}). Set CONNECTION MODE → USB TETHER SHOOTING AUTO (USB) or WIRELESS TETHER SHOOTING FIXED (Wi-Fi) in the camera menu"
             );
         }
         let take_control = || cam.call("XSDK_SetPriorityMode", unsafe { (self.f.set_priority_mode)(h, XSDK_PRIORITY_PC) });
@@ -412,6 +437,26 @@ pub struct Shot {
 }
 
 /// An open camera. Gives control back to the camera and closes on drop.
+/// How to reach the camera.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Link {
+    Usb,
+    /// Wi-Fi tethering, camera at this IPv4 address.
+    Wifi(String),
+    /// Wi-Fi tethering, search the local network.
+    WifiSearch,
+}
+
+impl std::fmt::Display for Link {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Link::Usb => write!(f, "USB"),
+            Link::Wifi(ip) => write!(f, "Wi-Fi {ip}"),
+            Link::WifiSearch => write!(f, "Wi-Fi"),
+        }
+    }
+}
+
 pub struct Camera<'a> {
     sdk: &'a Sdk,
     h: XSDK_HANDLE,

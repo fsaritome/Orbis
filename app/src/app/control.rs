@@ -170,6 +170,14 @@ impl OrbisApp {
                 }
                 Ok(Reply::ok(json!({ "ok": true, "set": changes.iter().map(|(s, v)| json!({ "setting": s.label(), "value": v, "name": s.value_name(*v) })).collect::<Vec<_>>() })))
             }
+            ("POST", "/camera/wifi") => {
+                let ip = body.get("ip").and_then(Value::as_str).ok_or_else(|| Reply::err(400, "send {\"ip\": \"192.168.…\"} or {\"ip\": \"\"} for USB only"))?;
+                self.saved.camera_ip = ip.trim().to_owned();
+                if let Ok(mut w) = self.cam_wifi.lock() {
+                    *w = self.saved.camera_ip.clone();
+                }
+                done("camera Wi-Fi address set (used when no USB camera is found)")
+            }
             ("POST", "/camera/preset") => {
                 idle("change camera settings")?;
                 let preset = fuji::settings::photogrammetry_preset();
@@ -315,9 +323,9 @@ impl OrbisApp {
             Link::Down(why) => json!({ "state": "down", "why": why }),
         };
         let camera = match &self.cam {
-            CamState::Searching => json!({ "state": "searching" }),
+            CamState::Searching => json!({ "state": "searching", "wifi_ip": self.saved.camera_ip }),
             CamState::Connected(i) => json!({
-                "state": "connected", "model": i.model, "lens": i.lens,
+                "state": "connected", "model": i.model, "lens": i.lens, "link": i.link,
                 "settings": self.cam_values.as_ref().map(|v| Setting::ALL.into_iter()
                     .map(|s| (s.label().to_owned(), json!(v.get(s).map(|x| s.value_name(x)))))
                     .collect::<serde_json::Map<_, _>>()),

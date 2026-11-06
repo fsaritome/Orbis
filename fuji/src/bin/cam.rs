@@ -7,8 +7,12 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(about = "Talk to a Fujifilm X camera over USB (tethered)")]
+#[command(about = "Talk to a Fujifilm X camera, tethered over USB or Wi-Fi")]
 struct Cli {
+    /// Camera over Wi-Fi at this IPv4 address (WIRELESS TETHER SHOOTING
+    /// FIXED) instead of USB. "search" scans the local network.
+    #[arg(long, global = true)]
+    ip: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -66,7 +70,14 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let sdk = fuji::Sdk::load()?;
     eprintln!("Fujifilm SDK {} from {}", sdk.version(), sdk.dir().display());
-    let cam = sdk.open_first()?;
+    let link = match cli.ip.as_deref() {
+        None => fuji::Link::Usb,
+        Some("search") => fuji::Link::WifiSearch,
+        Some(ip) => fuji::Link::Wifi(ip.to_owned()),
+    };
+    let t = Instant::now();
+    let cam = sdk.open(&link)?;
+    eprintln!("opened over {link} in {:.1} s", t.elapsed().as_secs_f32());
     let info = cam.device_info()?;
     eprintln!("connected: {} {} (firmware {})", info.vendor, info.product, info.firmware);
 

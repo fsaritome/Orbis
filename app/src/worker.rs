@@ -62,7 +62,7 @@ pub enum Event {
 /// How long a dry-run "shot" takes (stands in for the camera).
 const DRY_SHOT: Duration = Duration::from_millis(300);
 /// Upper bound for one capture incl. autofocus and transfer.
-const CAPTURE_TIMEOUT: Duration = Duration::from_secs(45);
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(150); // Wi-Fi transfers are slow
 const STATUS_EVERY: Duration = Duration::from_millis(250);
 const RETRY_EVERY: Duration = Duration::from_secs(3);
 

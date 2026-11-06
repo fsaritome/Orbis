@@ -16,7 +16,10 @@ pub const XSDK_COMPLETE: Long = 0;
 pub const XSDK_ERROR: Long = -1;
 
 pub const XSDK_DSC_IF_USB: Long = 0x0000_0001;
+/// Wi-Fi: search the local network segment.
 pub const XSDK_DSC_IF_WIFI_LOCAL: Long = 0x0000_0010;
+/// Wi-Fi: the camera at the given IPv4 address.
+pub const XSDK_DSC_IF_WIFI_IP: Long = 0x0000_0020;
 
 pub const XSDK_DSC_MODE_TETHER: Long = 0x0001;
 pub const XSDK_DSC_MODE_RAW: Long = 0x0002;

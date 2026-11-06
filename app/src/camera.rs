@@ -41,6 +41,8 @@ pub struct Capture {
 #[derive(Debug, Clone)]
 pub struct CamInfo {
     pub model: String,
+    /// "USB" or "Wi-Fi 192.168.…".
+    pub link: String,
     pub lens: String,
     pub firmware: String,
 }
@@ -70,16 +72,20 @@ pub enum CamEvent {
 
 const RETRY: Duration = Duration::from_secs(3);
 const REFRESH: Duration = Duration::from_secs(2);
-const IMAGE_TIMEOUT: Duration = Duration::from_secs(25);
+/// RAW + JPEG is ~45 MB: seconds over USB, much longer over Wi-Fi.
+const IMAGE_TIMEOUT: Duration = Duration::from_secs(120);
 pub const PREVIEW_PX: u32 = 1280;
 pub const THUMB_PX: u32 = 200;
 
-pub fn spawn(ctx: egui::Context) -> (Sender<CamCmd>, Receiver<CamEvent>) {
+/// Wi-Fi address of the camera (empty = USB only), shared with the app.
+pub type WifiAddr = std::sync::Arc<std::sync::Mutex<String>>;
+
+pub fn spawn(ctx: egui::Context, wifi: WifiAddr) -> (Sender<CamCmd>, Receiver<CamEvent>) {
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let (ev_tx, ev_rx) = mpsc::channel();
     thread::Builder::new()
         .name("camera".into())
-        .spawn(move || run(cmd_rx, Emitter { tx: ev_tx, ctx }))
+        .spawn(move || run(cmd_rx, Emitter { tx: ev_tx, ctx }, wifi))
         .expect("spawn camera thread");
     (cmd_tx, ev_rx)
 }
@@ -127,6 +133,8 @@ fn friendly(e: &anyhow::Error) -> String {
     if s.contains("not in tether mode") {
         "Camera found, but not in tether mode: set CONNECTION MODE → USB TETHER SHOOTING AUTO, then replug USB"
             .into()
+    } else if s.contains("no camera answering at") {
+        s.trim_start_matches("No camera on USB, and ").to_owned()
     } else if s.contains("no Fujifilm camera found") {
         "No camera on USB: switched off, unplugged or asleep? Half-press the shutter to wake it".into()
     } else if s.contains("SDK not found") {
@@ -136,7 +144,7 @@ fn friendly(e: &anyhow::Error) -> String {
     }
 }
 
-fn run(cmds: Receiver<CamCmd>, out: Emitter) {
+fn run(cmds: Receiver<CamCmd>, out: Emitter, wifi: WifiAddr) {
     let mut last_problem = String::new();
     loop {
         out.send(CamEvent::Searching);
@@ -153,7 +161,16 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
                 continue;
             }
         };
-        let cam = match sdk.open_first() {
+        // USB first; then Wi-Fi tethering if an address is set.
+        let ip = wifi.lock().map(|s| s.trim().to_owned()).unwrap_or_default();
+        let mut link = fuji::Link::Usb;
+        let cam = match match sdk.open(&link) {
+            Err(e) if !ip.is_empty() && format!("{e:#}").contains("no Fujifilm camera found") => {
+                link = fuji::Link::Wifi(ip.clone());
+                sdk.open(&link).map_err(|w| anyhow::anyhow!("No camera on USB, and {w:#}"))
+            }
+            r => r,
+        } {
             Ok(c) => c,
             Err(e) => {
                 let msg = friendly(&e);
@@ -173,8 +190,12 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
 
         let info = cam.device_info().map(|d| (d.product, d.firmware)).unwrap_or_default();
         let lens = cam.lens().unwrap_or_default();
-        out.send(CamEvent::Log(format!("Camera connected: {} with {}", info.0, if lens.is_empty() { "no lens info" } else { &lens })));
-        out.send(CamEvent::Connected(CamInfo { model: info.0, lens, firmware: info.1 }));
+        out.send(CamEvent::Log(format!(
+            "Camera connected over {link}: {} with {}",
+            info.0,
+            if lens.is_empty() { "no lens info" } else { &lens }
+        )));
+        out.send(CamEvent::Connected(CamInfo { model: info.0, link: link.to_string(), lens, firmware: info.1 }));
         send_settings(&cam, &out, true);
         let mut warned_battery = false;
         check_battery(&cam, &out, &mut warned_battery);

@@ -216,6 +216,12 @@ own licenses. Command line: `cargo run --release -p recon -- <scan folder>
 
 - MENU → wrench → CONNECTION SETTING → CONNECTION MODE →
   **USB TETHER SHOOTING AUTO**, then replug USB.
+- **Or over Wi-Fi:** CONNECTION SETTING → WIRELESS SETTINGS (access point,
+  IP address), then PC CONNECTION MODE → **WIRELESS TETHER SHOOTING FIXED**,
+  and enter the camera's IP under *Wi-Fi address* in the camera panel.
+  Orbis tries USB first, then Wi-Fi. Photos arrive slower (≈45 MB RAW +
+  JPEG each) and Wi-Fi drains the battery faster: JPEG only and a
+  DC coupler (CP-W235) help. `cam --ip <address> info` tests it.
 - Everything else is set from the app. Best results: press
   ✨ Photogrammetry settings, pick aperture/shutter for your light, focus
   once (test shot with autofocus), then set Focus = MF and switch off
