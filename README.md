@@ -1,8 +1,11 @@
-# Fuji Scanner
+# Orbis
 
-Automated photogrammetry rig: an ESP32-driven turntable plus a tethered
-Fujifilm X camera, orchestrated by a Rust app on the PC. The output is a folder
-of evenly spaced photos, ready for RealityCapture, Metashape or Meshroom.
+*Put it on the plate, press start, get a 3D-ready photo set.*
+
+Orbis is an automated photogrammetry rig: an ESP32-driven turntable plus a
+tethered Fujifilm X camera, orchestrated by a Rust app on the PC. The output
+is a folder of evenly spaced photos, ready for RealityCapture, Metashape or
+Meshroom.
 
 Rust rewrite of two earlier projects:
 
