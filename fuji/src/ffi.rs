@@ -240,3 +240,11 @@ pub const ERROR_DETAILS: [(Long, &str); 10] = [
     (0x0100, "live view running"),
     (0x0200, "previous photo not transferred yet"),
 ];
+
+/// Custom length of the "2 MIN" auto power-off (X-T4 and others).
+pub const API_CODE_SET_CUSTOM_AUTO_POWER_OFF: Long = 0x4229;
+pub const API_CODE_GET_CUSTOM_AUTO_POWER_OFF: Long = 0x4230;
+/// 1–254 = 10–263 s; 255 = never power off.
+pub const AUTO_POWER_OFF_NEVER: Long = 255;
+/// 120 s (value = seconds - 9): the stock "2 MIN".
+pub const AUTO_POWER_OFF_2_MIN: Long = 111;

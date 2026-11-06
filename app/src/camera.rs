@@ -121,7 +121,7 @@ fn friendly(e: &anyhow::Error) -> String {
         "Camera found, but not in tether mode: set CONNECTION MODE → USB TETHER SHOOTING AUTO, then replug USB"
             .into()
     } else if s.contains("no Fujifilm camera found") {
-        "No camera on USB (switched on and connected?)".into()
+        "No camera on USB: switched off, unplugged or asleep? Half-press the shutter to wake it".into()
     } else if s.contains("SDK not found") {
         "Fujifilm SDK missing: copy the DLLs into sdk/bin (see README)".into()
     } else {
@@ -168,6 +168,15 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
         let lens = cam.lens().unwrap_or_default();
         out.send(CamEvent::Log(format!("Camera connected: {} with {}", info.0, if lens.is_empty() { "no lens info" } else { &lens })));
         out.send(CamEvent::Connected(CamInfo { model: info.0, lens, firmware: info.1 }));
+        // Don't let the camera doze off between scans (restored on close).
+        match cam.keep_awake() {
+            Ok(fuji::ffi::AUTO_POWER_OFF_NEVER) => {}
+            Ok(before) => out.send(CamEvent::Log(format!(
+                "Camera: auto power-off paused while Orbis is connected (was {})",
+                if (1..=254).contains(&before) { format!("{} s", before + 9) } else { "the default 2 min".into() }
+            ))),
+            Err(e) => out.send(CamEvent::Log(format!("Camera: can't pause auto power-off: {e:#}"))),
+        }
         send_settings(&cam, &out, true);
 
         // Connected: serve commands, refresh settings, watch for unplugging.

@@ -295,7 +295,7 @@ impl OrbisApp {
             Link::Connected(how) => json!({
                 "state": "connected", "via": how,
                 "degrees": self.table_deg.map(|d| (d.rem_euclid(360.0) * 10.0).round() / 10.0),
-                "moving": self.moving, "motor_holds": self.enabled,
+                "moving": self.moving, "motor_holds": self.enabled, "speed_deg_s": self.saved.speed_deg_s,
             }),
             Link::Down(why) => json!({ "state": "down", "why": why }),
         };

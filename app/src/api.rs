@@ -107,18 +107,22 @@ fn reason(status: u16) -> &'static str {
 
 fn respond(stream: &mut TcpStream, r: Reply) -> std::io::Result<()> {
     let body = serde_json::to_string_pretty(&r.body).unwrap_or_default();
-    write!(
-        stream,
+    // One write: several small ones stall on Nagle + delayed ACK (~0.5 s).
+    let msg = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         r.status,
         reason(r.status),
         body.len()
-    )?;
-    stream.flush()
+    );
+    stream.write_all(msg.as_bytes())?;
+    stream.flush()?;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    Ok(())
 }
 
 fn handle(mut stream: TcpStream, tx: &Sender<Call>, ctx: &egui::Context) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_nodelay(true)?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
     reader.read_line(&mut line)?;

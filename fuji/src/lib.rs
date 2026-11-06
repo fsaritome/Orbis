@@ -245,7 +245,7 @@ impl Sdk {
         if ret != XSDK_COMPLETE {
             bail!("XSDK_OpenEx failed: {}", self.last_error(h));
         }
-        let cam = Camera { sdk: self, h, mode };
+        let cam = Camera { sdk: self, h, mode, restore_power_off: std::cell::Cell::new(None) };
         if mode & XSDK_DSC_MODE_TETHER == 0 {
             bail!(
                 "camera is connected but not in tether mode (mode flags {mode:#x}). \
@@ -414,6 +414,8 @@ pub struct Camera<'a> {
     sdk: &'a Sdk,
     h: XSDK_HANDLE,
     mode: Long,
+    /// Auto power-off value to put back on close (see [`Camera::keep_awake`]).
+    restore_power_off: std::cell::Cell<Option<i32>>,
 }
 
 impl Camera<'_> {
@@ -725,6 +727,29 @@ impl Camera<'_> {
         Ok(v)
     }
 
+    /// Stops the camera from powering off while the app holds it.
+    ///
+    /// The X-T4's "2 MIN" auto power-off has a custom length that the SDK
+    /// can set (1–254 = 10–263 s, 255 = never). It's set to "never" now and
+    /// the old value goes back when the camera is closed, so the camera's own
+    /// menu setting is unchanged afterwards. Returns the previous value.
+    /// (Only takes effect when the camera's AUTO POWER OFF is set to 2 MIN;
+    /// with OFF it never sleeps anyway.)
+    pub fn keep_awake(&self) -> Result<i32> {
+        let before = self.get_prop(API_CODE_GET_CUSTOM_AUTO_POWER_OFF)?;
+        if before != AUTO_POWER_OFF_NEVER {
+            self.call("XSDK_SetProp(CustomAutoPowerOff)", unsafe {
+                (self.sdk.f.set_prop)(self.h, API_CODE_SET_CUSTOM_AUTO_POWER_OFF, 1, AUTO_POWER_OFF_NEVER)
+            })?;
+            if self.restore_power_off.get().is_none() {
+                // 0 = never customised (the plain 2 minutes): put back 120 s.
+                let back = if (1..=254).contains(&before) { before } else { AUTO_POWER_OFF_2_MIN };
+                self.restore_power_off.set(Some(back));
+            }
+        }
+        Ok(before)
+    }
+
     fn get_prop(&self, code: Long) -> Result<i32> {
         let mut v = 0;
         self.call("XSDK_GetProp", unsafe { (self.sdk.f.get_prop)(self.h, code, 1, &mut v) })?;
@@ -814,6 +839,9 @@ impl Camera<'_> {
 
 impl Drop for Camera<'_> {
     fn drop(&mut self) {
+        if let Some(v) = self.restore_power_off.take() {
+            unsafe { (self.sdk.f.set_prop)(self.h, API_CODE_SET_CUSTOM_AUTO_POWER_OFF, 1, v) };
+        }
         unsafe {
             (self.sdk.f.set_priority_mode)(self.h, XSDK_PRIORITY_CAMERA);
             (self.sdk.f.close)(self.h);
