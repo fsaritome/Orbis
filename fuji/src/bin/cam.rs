@@ -48,6 +48,13 @@ enum Cmd {
         #[arg(long, default_value = "scans/test/live.jpg")]
         out: PathBuf,
     },
+    /// Read (or with --set write) the custom auto power-off value.
+    PowerOff {
+        #[arg(long)]
+        set: Option<i32>,
+    },
+    /// Buffer, card recording, priority and last error.
+    Diag,
     /// Save any images still waiting in the camera's transfer buffer.
     Drain {
         #[arg(long, default_value = "scans/test")]
@@ -163,6 +170,18 @@ fn main() -> Result<()> {
                     println!("{frames} frames in {seconds} s ({fps:.1} fps), {} KB each; last saved to {}", f.len() / 1024, out.display());
                 }
                 None => println!("no live view frames arrived"),
+            }
+        }
+        Cmd::PowerOff { set } => {
+            println!("custom auto power-off now: {}", cam.custom_power_off()?);
+            if let Some(v) = set {
+                cam.set_custom_power_off(v)?;
+                println!("set to {v}; reads back: {}", cam.custom_power_off()?);
+            }
+        }
+        Cmd::Diag => {
+            for (k, v) in cam.diagnostics() {
+                println!("{k:32} {v}");
             }
         }
         Cmd::Drain { out } => {

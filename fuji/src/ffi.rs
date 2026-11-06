@@ -248,3 +248,8 @@ pub const API_CODE_GET_CUSTOM_AUTO_POWER_OFF: Long = 0x4230;
 pub const AUTO_POWER_OFF_NEVER: Long = 255;
 /// 120 s (value = seconds - 9): the stock "2 MIN".
 pub const AUTO_POWER_OFF_2_MIN: Long = 111;
+
+/// Battery level (X-T4: 6 outputs via XSDK_GetProp).
+pub const API_CODE_CHECK_BATTERY_INFO: Long = 0x4055;
+pub type FnGetProp6 =
+    unsafe extern "C" fn(XSDK_HANDLE, Long, Long, *mut Long, *mut Long, *mut Long, *mut Long, *mut Long, *mut Long) -> Long;

@@ -65,7 +65,8 @@ function CamSet([string]$k, $v) { Api POST /camera @{ $k = $v } }
 function CamName([string]$k) { (Api GET /camera).Json.settings.$k.name }
 foreach ($k in 'Aperture', 'ISO', 'White balance', 'Focus', 'Image quality', 'Film simulation') {
     $c = $cam.$k
-    $other = $c.choices | Where-Object { $_ -ne $c.name } | Select-Object -First 1
+    # "Super Fine" is offered but refused (COMBINATION), and the X-T4 dropped off USB after it once.
+    $other = $c.choices | Where-Object { $_ -ne $c.name -and $_ -notmatch "Super Fine" } | Select-Object -First 1
     if (-not $other) { Check "$k has choices" $false; continue }
     $r = CamSet $k $other
     Check "$k -> $other (accepted)" ($r.Code -eq 200) ($r.Json.error)

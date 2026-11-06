@@ -171,6 +171,8 @@ pub struct OrbisApp {
     link: Link,
     cam: CamState,
     cam_values: Option<Values>,
+    /// Camera battery in percent.
+    cam_battery: Option<u8>,
     cam_choices: Choices,
     /// The turntable has no home sensor: its position is zeroed once per
     /// session on the first connect, so angles start at 0°.
@@ -222,6 +224,7 @@ impl OrbisApp {
             link: Link::Connecting,
             cam: CamState::Searching,
             cam_values: None,
+            cam_battery: None,
             cam_choices: Choices::default(),
             zeroed: false,
             table_deg: None,
@@ -405,6 +408,7 @@ impl OrbisApp {
         while let Ok(ev) = self.cam_events.try_recv() {
             match ev {
                 CamEvent::Searching => {
+                    self.cam_battery = None;
                     if !matches!(self.cam, CamState::Problem(_)) {
                         self.cam = CamState::Searching;
                     }
@@ -421,6 +425,7 @@ impl OrbisApp {
                     self.cam = CamState::Problem(why);
                     self.cam_values = None;
                 }
+                CamEvent::Battery(b) => self.cam_battery = b,
                 CamEvent::Settings { values, choices } => {
                     self.cam_values = Some(values);
                     if let Some(c) = choices {
@@ -541,6 +546,11 @@ impl OrbisApp {
             let resp = ui.label(text);
             if let Some(h) = hover {
                 resp.on_hover_text(h);
+            }
+            if let (CamState::Connected(_), Some(b)) = (&self.cam, self.cam_battery) {
+                let color = if b <= crate::camera::BATTERY_LOW { RED } else if b <= 40 { AMBER } else { ui.visuals().text_color() };
+                ui.label(RichText::new(format!("🔋 {b} %")).color(color))
+                    .on_hover_text("Camera battery. Below 20 % the X-T4 refuses shots and then switches off.");
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let z = ui.ctx().zoom_factor();

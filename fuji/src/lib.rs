@@ -119,6 +119,7 @@ struct Fns {
     focus_area_get: FnFocusArea,
     focus_area_cap: FnCapFocusArea,
     get_prop: FnGetProp1,
+    get_prop6: FnGetProp6,
     cap_prop: FnCapProp2,
 }
 
@@ -199,6 +200,7 @@ impl Sdk {
             focus_area_get: sym!("XSDK_GetProp"),
             focus_area_cap: sym!("XSDK_CapProp"),
             get_prop: sym!("XSDK_GetProp"),
+            get_prop6: sym!("XSDK_GetProp"),
             cap_prop: sym!("XSDK_CapProp"),
         };
         // Like Fujifilm's ReleaseButton sample, pass NULL: the SDK finds its
@@ -245,7 +247,7 @@ impl Sdk {
         if ret != XSDK_COMPLETE {
             bail!("XSDK_OpenEx failed: {}", self.last_error(h));
         }
-        let cam = Camera { sdk: self, h, mode, restore_power_off: std::cell::Cell::new(None) };
+        let cam = Camera { sdk: self, h, mode };
         if mode & XSDK_DSC_MODE_TETHER == 0 {
             bail!(
                 "camera is connected but not in tether mode (mode flags {mode:#x}). \
@@ -414,8 +416,6 @@ pub struct Camera<'a> {
     sdk: &'a Sdk,
     h: XSDK_HANDLE,
     mode: Long,
-    /// Auto power-off value to put back on close (see [`Camera::keep_awake`]).
-    restore_power_off: std::cell::Cell<Option<i32>>,
 }
 
 impl Camera<'_> {
@@ -477,6 +477,33 @@ impl Camera<'_> {
 
     pub fn set_media_record(&self, v: i32) -> Result<()> {
         self.call("XSDK_SetMediaRecord", unsafe { (self.sdk.f.set_media_record)(self.h, v) })
+    }
+
+    /// Raw state for troubleshooting refused releases: buffer, recording
+    /// medium, priority, auto power-off, and the last error's details.
+    pub fn diagnostics(&self) -> Vec<(String, String)> {
+        let mut d = Vec::new();
+        let (mut shot, mut total) = (0, 0);
+        let r = unsafe { (self.sdk.f.get_buffer_capacity)(self.h, &mut shot, &mut total) };
+        d.push(("buffer (shots / total frames)".into(), if r == XSDK_COMPLETE { format!("{shot} / {total}") } else { self.sdk.last_error(self.h) }));
+        d.push((
+            "media record".into(),
+            match self.media_record() {
+                Ok(1) => "RAW+JPEG to card".into(),
+                Ok(2) => "RAW to card".into(),
+                Ok(3) => "JPEG to card".into(),
+                Ok(4) => "off (PC only)".into(),
+                Ok(v) => format!("{v}"),
+                Err(e) => format!("{e:#}"),
+            },
+        ));
+        let mut prio = 0;
+        let r = unsafe { (self.sdk.f.get_priority_mode)(self.h, &mut prio) };
+        d.push(("priority".into(), if r == XSDK_COMPLETE { (if prio == XSDK_PRIORITY_PC { "PC" } else { "camera" }).into() } else { self.sdk.last_error(self.h) }));
+        d.push(("custom auto power-off".into(), self.get_prop(API_CODE_GET_CUSTOM_AUTO_POWER_OFF).map(|v| v.to_string()).unwrap_or_else(|e| format!("{e:#}"))));
+        d.push(("battery raw [body, grip1, grip2, body %, grip1 %, grip2 %]".into(), self.battery_raw().map(|v| format!("{v:?}")).unwrap_or_else(|e| format!("{e:#}"))));
+        d.push(("last error".into(), self.sdk.last_error(self.h)));
+        d
     }
 
     /// Images waiting in the camera's transfer buffer.
@@ -727,27 +754,47 @@ impl Camera<'_> {
         Ok(v)
     }
 
-    /// Stops the camera from powering off while the app holds it.
-    ///
-    /// The X-T4's "2 MIN" auto power-off has a custom length that the SDK
-    /// can set (1–254 = 10–263 s, 255 = never). It's set to "never" now and
-    /// the old value goes back when the camera is closed, so the camera's own
-    /// menu setting is unchanged afterwards. Returns the previous value.
-    /// (Only takes effect when the camera's AUTO POWER OFF is set to 2 MIN;
-    /// with OFF it never sleeps anyway.)
-    pub fn keep_awake(&self) -> Result<i32> {
-        let before = self.get_prop(API_CODE_GET_CUSTOM_AUTO_POWER_OFF)?;
-        if before != AUTO_POWER_OFF_NEVER {
-            self.call("XSDK_SetProp(CustomAutoPowerOff)", unsafe {
-                (self.sdk.f.set_prop)(self.h, API_CODE_SET_CUSTOM_AUTO_POWER_OFF, 1, AUTO_POWER_OFF_NEVER)
-            })?;
-            if self.restore_power_off.get().is_none() {
-                // 0 = never customised (the plain 2 minutes): put back 120 s.
-                let back = if (1..=254).contains(&before) { before } else { AUTO_POWER_OFF_2_MIN };
-                self.restore_power_off.set(Some(back));
-            }
-        }
-        Ok(before)
+    /// Body battery charge in percent (`None` on mains power / unknown).
+    /// A weak battery makes the X-T4 refuse releases (SHOOT_ERROR) and then
+    /// switch off, so the app shows this and warns early.
+    pub fn battery(&self) -> Result<Option<u8>> {
+        let mut v = [0 as Long; 6];
+        let [a, b, c, d, e, f] = &mut v;
+        self.call("XSDK_GetProp(CheckBatteryInfo)", unsafe {
+            (self.sdk.f.get_prop6)(self.h, API_CODE_CHECK_BATTERY_INFO, 6, a, b, c, d, e, f)
+        })?;
+        // [body level, grip 1 level, grip 2 level, body %, grip 1 %, grip 2 %]
+        let (level, pct) = (v[0], v[3]);
+        Ok(match level {
+            0x00FF | 0x000D => None, // DC power / charging
+            _ if (0..=100).contains(&pct) => Some(pct as u8),
+            _ => None,
+        })
+    }
+
+    /// Raw battery values, for diagnostics.
+    pub fn battery_raw(&self) -> Result<[i32; 6]> {
+        let mut v = [0 as Long; 6];
+        let [a, b, c, d, e, f] = &mut v;
+        self.call("XSDK_GetProp(CheckBatteryInfo)", unsafe {
+            (self.sdk.f.get_prop6)(self.h, API_CODE_CHECK_BATTERY_INFO, 6, a, b, c, d, e, f)
+        })?;
+        Ok(v)
+    }
+
+    /// The custom length of the camera's "2 MIN" auto power-off as stored
+    /// in the camera (the SDK manual: 1–254 = 10–263 s, 255 = never; 0 seen
+    /// on an X-T4 that was never customised).
+    pub fn custom_power_off(&self) -> Result<i32> {
+        self.get_prop(API_CODE_GET_CUSTOM_AUTO_POWER_OFF)
+    }
+
+    /// Writes that value. Orbis doesn't call this on its own any more: on
+    /// the X-T4 writing it made the camera switch itself off.
+    pub fn set_custom_power_off(&self, v: i32) -> Result<()> {
+        self.call("XSDK_SetProp(CustomAutoPowerOff)", unsafe {
+            (self.sdk.f.set_prop)(self.h, API_CODE_SET_CUSTOM_AUTO_POWER_OFF, 1, v)
+        })
     }
 
     fn get_prop(&self, code: Long) -> Result<i32> {
@@ -839,9 +886,6 @@ impl Camera<'_> {
 
 impl Drop for Camera<'_> {
     fn drop(&mut self) {
-        if let Some(v) = self.restore_power_off.take() {
-            unsafe { (self.sdk.f.set_prop)(self.h, API_CODE_SET_CUSTOM_AUTO_POWER_OFF, 1, v) };
-        }
         unsafe {
             (self.sdk.f.set_priority_mode)(self.h, XSDK_PRIORITY_CAMERA);
             (self.sdk.f.close)(self.h);

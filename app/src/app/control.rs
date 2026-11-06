@@ -44,6 +44,18 @@ impl OrbisApp {
             ctx.request_repaint();
             return;
         }
+        if (method.as_str(), path.as_str()) == ("GET", "/camera/diag") {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = self.cam_cmd.send(CamCmd::Diagnose(tx));
+            std::thread::spawn(move || {
+                let r = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                    Ok(d) => Reply::ok(Value::Object(d.into_iter().map(|(k, v)| (k, Value::String(v))).collect())),
+                    Err(_) => Reply::err(504, "camera thread busy (stuck in a call?)"),
+                };
+                let _ = reply.send(r);
+            });
+            return;
+        }
         let r = self.route(ctx, &method, &path, &query, &body).unwrap_or_else(|e| e);
         let _ = reply.send(r);
     }
@@ -306,6 +318,7 @@ impl OrbisApp {
                 "settings": self.cam_values.as_ref().map(|v| Setting::ALL.into_iter()
                     .map(|s| (s.label().to_owned(), json!(v.get(s).map(|x| s.value_name(x)))))
                     .collect::<serde_json::Map<_, _>>()),
+                "battery_percent": self.cam_battery,
                 "live_view": self.live_on,
                 "test_shot_busy": self.test_shot_busy,
             }),

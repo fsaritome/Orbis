@@ -98,6 +98,18 @@ Release etc.) without the user's OK.
 - Fujifilm SDK 1.33 lives in `sdk/` (git-ignored, from
   `C:\GIT\FUJI_SDK\SDK13300`). Never commit SDK files: they're proprietary.
 
+## Camera troubleshooting (learned the hard way)
+
+- **SHOOT_ERROR on every release + the camera switching itself off = low
+  battery.** Check `battery_percent` in `/status` (or `GET /camera/diag`,
+  `cam diag`) before debugging anything else.
+- **Never write the camera's power settings** (`SetCustomAutoPowerOff`
+  etc.). Setting 255 ("never" per the manual) made the X-T4 switch off on
+  its own; it was reset to its original 0. To stop it sleeping, the user
+  sets AUTO POWER OFF in the camera menu.
+- "RAW + JPEG Super Fine" is offered by the camera but refused
+  (COMBINATION); don't pick it in tests.
+
 ## Hardware facts
 
 - Driver ST-4045-A1: DIP SW4–6 = ON ON OFF for 1/16 microstepping (all OFF

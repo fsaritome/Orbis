@@ -33,6 +33,7 @@ POST /scan/start                   {dry_run: false}
 POST /scan/pause | /scan/resume | /scan/stop | /scan/continue   (continue = next ring)
 GET  /camera                       settings, values and choices
 POST /camera                       {\"Aperture\": \"F8\", \"ISO\": 160, ...}  (name or raw value)
+GET  /camera/diag                  buffer, card recording, priority, last error
 POST /camera/preset                photogrammetry settings
 POST /camera/test-shot
 POST /camera/live                  {on: true}

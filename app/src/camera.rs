@@ -24,6 +24,8 @@ pub enum CamCmd {
     /// Move the focus point to (x, y) in the photo (0..1, top-left
     /// origin) and autofocus there.
     FocusAt { x: f32, y: f32 },
+    /// Troubleshooting values (see `fuji::Camera::diagnostics`).
+    Diagnose(Sender<Vec<(String, String)>>),
     /// Stop live view and give control back to the camera; answers on
     /// the channel when done. Sent when the app closes.
     Shutdown(Sender<()>),
@@ -61,6 +63,8 @@ pub enum CamEvent {
     /// Where the focus point is, as a rectangle in photo coordinates
     /// (0..1): left, top, width, height.
     FocusPoint([f32; 4]),
+    /// Body battery in percent (None = mains power or unknown).
+    Battery(Option<u8>),
     Log(String),
 }
 
@@ -103,6 +107,9 @@ fn refuse_pending(cmds: &Receiver<CamCmd>, out: &Emitter, why: &str, wait: Durat
             }
             Ok(CamCmd::Set(_)) => out.send(CamEvent::Log(format!("Camera: can't change settings: {why}"))),
             Ok(CamCmd::LiveView(_) | CamCmd::FocusNow | CamCmd::FocusAt { .. }) => out.send(CamEvent::Live(false)),
+            Ok(CamCmd::Diagnose(reply)) => {
+                let _ = reply.send(vec![("state".into(), why.to_owned())]);
+            }
             Ok(CamCmd::Shutdown(done)) => {
                 let _ = done.send(());
                 return false;
@@ -168,16 +175,9 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
         let lens = cam.lens().unwrap_or_default();
         out.send(CamEvent::Log(format!("Camera connected: {} with {}", info.0, if lens.is_empty() { "no lens info" } else { &lens })));
         out.send(CamEvent::Connected(CamInfo { model: info.0, lens, firmware: info.1 }));
-        // Don't let the camera doze off between scans (restored on close).
-        match cam.keep_awake() {
-            Ok(fuji::ffi::AUTO_POWER_OFF_NEVER) => {}
-            Ok(before) => out.send(CamEvent::Log(format!(
-                "Camera: auto power-off paused while Orbis is connected (was {})",
-                if (1..=254).contains(&before) { format!("{} s", before + 9) } else { "the default 2 min".into() }
-            ))),
-            Err(e) => out.send(CamEvent::Log(format!("Camera: can't pause auto power-off: {e:#}"))),
-        }
         send_settings(&cam, &out, true);
+        let mut warned_battery = false;
+        check_battery(&cam, &out, &mut warned_battery);
 
         // Connected: serve commands, refresh settings, watch for unplugging.
         let mut next_refresh = Instant::now() + REFRESH;
@@ -222,6 +222,11 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
                         }
                     }
                 }
+                Ok(CamCmd::Diagnose(reply)) => {
+                    let mut d = cam.diagnostics();
+                    d.insert(0, ("live view".into(), live.to_string()));
+                    let _ = reply.send(d);
+                }
                 Ok(CamCmd::Shutdown(done)) => {
                     if live {
                         let _ = cam.stop_live_view();
@@ -236,7 +241,16 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
                     if live {
                         let _ = cam.stop_live_view();
                     }
-                    let result = capture(&cam, &stem, autofocus, &out).map_err(|e| format!("{e:#}"));
+                    let result = capture(&cam, &stem, autofocus, &out).map_err(|e| {
+                        let mut msg = format!("{e:#}");
+                        // The usual reason for a refused release.
+                        if let Ok(Some(b)) = cam.battery() {
+                            if b <= BATTERY_LOW + 5 {
+                                msg.push_str(&format!(" — camera battery at {b} %: charge or swap it"));
+                            }
+                        }
+                        msg
+                    });
                     if live && cam.start_live_view().is_err() {
                         live = false;
                         out.send(CamEvent::Live(false));
@@ -292,8 +306,29 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter) {
                 // Values every 2 s; full choice lists every 20 s (lens swaps).
                 refreshes += 1;
                 send_settings(&cam, &out, refreshes.is_multiple_of(10));
+                if refreshes.is_multiple_of(10) {
+                    check_battery(&cam, &out, &mut warned_battery);
+                }
             }
         }
+    }
+}
+
+/// Below this the X-T4 starts refusing releases and soon switches off.
+pub const BATTERY_LOW: u8 = 20;
+
+fn check_battery(cam: &fuji::Camera<'_>, out: &Emitter, warned: &mut bool) {
+    let b = cam.battery().ok().flatten();
+    out.send(CamEvent::Battery(b));
+    match b {
+        Some(p) if p <= BATTERY_LOW && !*warned => {
+            *warned = true;
+            out.send(CamEvent::Log(format!(
+                "⚠ Camera battery low ({p} %): shots will start failing and the camera will switch off. Charge or swap it."
+            )));
+        }
+        Some(p) if p > BATTERY_LOW + 10 => *warned = false,
+        _ => {}
     }
 }
 
