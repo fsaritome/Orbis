@@ -1,11 +1,17 @@
-# Orbis
+<p align="center"><img src="docs/img/logo.svg" alt="Orbis logo: a chameleon whose curled tail forms an orbit ring, next to the word Orbis" width="560"></p>
 
-*Put it on the plate, press start, get a 3D-ready photo set.*
+<p align="center"><em>Put it on the plate, press start, get a 3D-ready photo set.</em></p>
 
 Orbis is an automated photogrammetry rig: a wireless ESP32 turntable plus a
 tethered Fujifilm X camera, orchestrated by a Rust app on the PC. The output
 is a folder of evenly spaced photos, ready for RealityCapture, Metashape or
 Meshroom.
+
+<p align="center"><img src="docs/img/mascot.png" alt="The Orbis mascot, a friendly chameleon sitting on a turntable, aims its camera-lens eye at a clay vase while snapshots of the vase circle the plate on a dotted orbit." width="520"></p>
+
+Why a chameleon: its eyes swivel on their own and see all the way round, it
+sits perfectly still while the world turns, and its tail curls into a
+circle, which is what *orbis* means.
 
 Rust rewrite of two earlier projects:
 
@@ -37,6 +43,7 @@ so it only needs power.
 | `fuji/` | Bindings + safe wrapper for Fujifilm `XAPI.dll`, and the `cam` test CLI | ✅ connects; capture awaits tether mode test |
 | `app/` | `orbis` desktop app (egui): scan settings, angle wheel, turntable control, dry runs | ✅ turntable part |
 | `sdk/` | Your copy of the Fujifilm SDK (git-ignored) | local only |
+| `docs/img/`, `tools/*-art.ps1` | Logo, mascot, icons, social preview and the scripts that make them | ✅ |
 
 ## Hardware
 

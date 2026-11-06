@@ -176,6 +176,8 @@ pub struct OrbisApp {
     /// Focus frame to draw on the live view (photo coordinates 0..1).
     focus_rect: Option<[f32; 4]>,
     shut_down: bool,
+    /// The chameleon emblem for the top bar.
+    icon: Option<TextureHandle>,
     log: VecDeque<String>,
 }
 
@@ -213,6 +215,15 @@ impl OrbisApp {
             focus_result: None,
             focus_rect: None,
             shut_down: false,
+            icon: image::load_from_memory(include_bytes!("../../docs/img/icon-64.png")).ok().map(|img| {
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                cc.egui_ctx.load_texture(
+                    "orbis-icon",
+                    ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
+                    TextureOptions::LINEAR,
+                )
+            }),
             log: VecDeque::new(),
         }
     }
@@ -452,7 +463,10 @@ impl OrbisApp {
 
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new("◎ Orbis").size(20.0).strong());
+            if let Some(icon) = &self.icon {
+                ui.add(egui::Image::new((icon.id(), egui::vec2(24.0, 24.0))));
+            }
+            ui.label(RichText::new("Orbis").size(20.0).strong());
             ui.add_space(16.0);
             ui.separator();
             let (color, text) = match &self.link {
