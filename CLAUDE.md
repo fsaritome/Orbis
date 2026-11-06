@@ -27,6 +27,15 @@ The user wants to see what is happening. Anything that takes more than a few
 seconds or involves the hardware (flashing, serial monitors, scans, motor
 tests) runs in a visible terminal tab, not as hidden background output.
 
+## Running the app
+
+- Start it in a visible terminal tab: `cargo run --release -p orbis`.
+  Close the running window first, or the build can't replace `orbis.exe`.
+- The turntable accepts **one TCP client at a time**. Never run `rig` while
+  the app is connected, and never start a second app window: computer-use
+  `open_application("Orbis")` launches a new instance. To look at an
+  already running window, just take a screenshot.
+
 ## Environment
 
 - Windows 11, PowerShell. Repo at `C:\GIT\Orbis`; GitHub `fsaritome/Orbis`

@@ -209,7 +209,15 @@ impl Rig {
     pub fn open_auto() -> Result<Self> {
         let found = discover(Duration::from_millis(1500)).unwrap_or_default();
         match found.as_slice() {
-            [one] => return Self::connect(one.addr),
+            [one] => {
+                return Self::connect(one.addr).with_context(|| {
+                    format!(
+                        "turntable at {} answered but refused the connection; it accepts one client at a time, \
+                         so another Orbis window or `rig` command is probably using it",
+                        one.addr.ip()
+                    )
+                })
+            }
             [] => {}
             many => bail!(
                 "several turntables answered: {}; pass --host",

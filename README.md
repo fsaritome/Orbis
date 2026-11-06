@@ -35,7 +35,7 @@ so it only needs power.
 | `firmware/` | ESP32 firmware: motor on core 1, Wi-Fi/TCP/discovery/serial on core 0 | ✅ tested on hardware |
 | `rig/` | PC library + `rig` CLI to drive the turntable | ✅ |
 | `fuji-sdk-sys/`, `fuji/` | Bindings + safe wrapper for Fujifilm `XAPI.dll` | next |
-| `scanner/` | Scan orchestrator + egui GUI with preview | planned |
+| `app/` | `orbis` desktop app (egui): scan settings, angle wheel, turntable control, dry runs | ✅ turntable part |
 | `sdk/` | Your copy of the Fujifilm SDK (git-ignored) | local only |
 
 ## Hardware
@@ -104,7 +104,22 @@ cargo run -p rig -- discover        # after ~10 s: shows its IP
 
 From then on it only needs power. `rig` finds it on the network by itself.
 
-## Using the turntable
+## The Orbis app
+
+```powershell
+cargo run --release -p orbis
+```
+
+Scan settings (detail preset, rings, settle time) with time and disk
+estimates, an angle wheel showing progress per ring, turntable controls
+(jog, zero, speed, mechanics) and a dry run that turns through a whole
+scan without photos. The BOOT button on the turntable starts/stops a scan
+and confirms ring changes. Camera preview and capture come next.
+
+Only one program can talk to the turntable at a time: close the app before
+using `rig`, and vice versa.
+
+## Using the turntable from the command line
 
 ```powershell
 cargo run -p rig -- status
