@@ -80,16 +80,17 @@ Prerequisites: Rust (stable) for the PC side; for the firmware,
 # PC side
 cargo test --workspace
 
-# Firmware (separate toolchain, run inside firmware/)
-. $env:USERPROFILE\export-esp.ps1
-cd firmware
-cargo build --release
-espflash flash --chip esp32 --port COM5 target\xtensa-esp32-none-elf\release\orbis-firmware
+# Firmware: build + flash (keeps the stored Wi-Fi settings)
+.\scripts\flash.ps1 -Port COM5
+# Blank or foreign board: also writes bootloader + partition table
+.\scripts\flash.ps1 -Port COM5 -Full
 ```
 
-**Flashing tip:** if `espflash` stops at "Connecting...", hold **BOOT**, tap
-**EN**, then release BOOT. The board's auto-reset circuit is unreliable; a
-10 µF capacitor between EN and GND fixes it for good.
+The script waits at "Connecting..." until the board is in download mode:
+**hold BOOT, tap EN, release BOOT**. Don't use `espflash flash` on this
+board: it toggles the reset lines when opening the port, which knocks the
+board back out of download mode. A 10 µF capacitor between EN and GND
+fixes the board's unreliable auto-reset for good.
 
 ## First-time setup
 
