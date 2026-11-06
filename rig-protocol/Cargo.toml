@@ -1,0 +1,13 @@
+[package]
+name = "rig-protocol"
+description = "Messages between the PC and the ESP32 turntable controller (no_std)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive"] }
+postcard = { version = "1", default-features = false }
+
+[features]
+std = ["postcard/use-std"]

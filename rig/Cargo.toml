@@ -1,0 +1,12 @@
+[package]
+name = "rig"
+description = "PC-side driver and CLI for the ESP32 photogrammetry turntable"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+rig-protocol = { path = "../rig-protocol", features = ["std"] }
+serialport = "4"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }

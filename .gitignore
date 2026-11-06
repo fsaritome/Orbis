@@ -1,0 +1,11 @@
+/target
+/firmware/target
+
+# Fujifilm X SDK: proprietary, never commit (see README)
+/sdk/
+*.dll
+XAPI.H
+XAPI.h
+
+# Scan output
+/scans/
