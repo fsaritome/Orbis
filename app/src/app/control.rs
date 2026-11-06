@@ -113,6 +113,9 @@ impl OrbisApp {
                 if !self.connected() {
                     return Err(Reply::err(409, "turntable not connected"));
                 }
+                if !dry && self.battery_too_low() {
+                    return Err(Reply::err(409, format!("camera battery at {} %: charge or swap it before a scan", self.cam_battery.unwrap_or(0))));
+                }
                 if !dry && !self.camera_ready() {
                     return Err(Reply::err(409, "camera not ready (or pass {\"dry_run\": true})"));
                 }

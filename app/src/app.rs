@@ -281,6 +281,11 @@ impl OrbisApp {
         matches!(self.link, Link::Connected(_))
     }
 
+    /// A real scan would fail partway: the X-T4 refuses shots on a weak battery.
+    fn battery_too_low(&self) -> bool {
+        self.cam_battery.is_some_and(|b| b <= crate::camera::BATTERY_LOW)
+    }
+
     fn camera_ready(&self) -> bool {
         matches!(self.cam, CamState::Connected(_))
     }
@@ -334,7 +339,13 @@ impl OrbisApp {
                     match &self.scan {
                         Some(s) if s.waiting_ring.is_some() => self.continue_ring(),
                         Some(_) => self.send(Cmd::Stop),
-                        None if self.connected() => self.start_scan(self.camera_ready()),
+                        None if self.connected() => {
+                            let real = self.camera_ready() && !self.battery_too_low();
+                            if self.camera_ready() && !real {
+                                self.push_log("Camera battery too low for a scan: dry run only".into());
+                            }
+                            self.start_scan(real)
+                        }
                         None => {}
                     }
                 }
@@ -627,10 +638,13 @@ impl OrbisApp {
         ui.add_space(10.0);
         match &self.scan {
             None => {
-                let ready = self.connected() && self.camera_ready();
+                let battery_low = self.battery_too_low();
+                let ready = self.connected() && self.camera_ready() && !battery_low;
                 let btn = egui::Button::new(RichText::new("▶  Start scan").size(16.0).strong())
                     .min_size(egui::vec2(ui.available_width(), 38.0));
-                let hint = if ready {
+                let hint = if battery_low {
+                    "Camera battery too low for a scan: charge or swap it (the camera would refuse shots and switch off)"
+                } else if ready {
                     "Turn, settle, shoot and save every position"
                 } else {
                     "Needs both the turntable and the camera connected"
