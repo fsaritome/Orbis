@@ -4,6 +4,7 @@
 
 mod app;
 mod camera;
+mod model;
 mod plan;
 mod wheel;
 mod worker;

@@ -50,6 +50,8 @@ struct Saved {
     /// value). Re-applied on every connect: once the app lets go, the X-T4
     /// falls back to its physical dials.
     camera: Vec<(usize, i32)>,
+    /// 3D model options.
+    model: crate::model::ModelSettings,
 }
 
 fn default_scans_root() -> PathBuf {
@@ -70,6 +72,7 @@ impl Default for Saved {
             scans_root: default_scans_root(),
             autofocus: true,
             camera: Vec::new(),
+            model: Default::default(),
         }
     }
 }
@@ -178,12 +181,15 @@ pub struct OrbisApp {
     shut_down: bool,
     /// The chameleon emblem for the top bar.
     icon: Option<TextureHandle>,
+    /// 3D reconstruction of finished scans.
+    model: crate::model::ModelPanel,
     log: VecDeque<String>,
 }
 
 impl OrbisApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let saved: Saved = cc.storage.and_then(|s| eframe::get_value(s, eframe::APP_KEY)).unwrap_or_default();
+        let saved_root = saved.scans_root.clone();
         let (cam_cmd, cam_events) = camera::spawn(cc.egui_ctx.clone());
         let (cmd, events) = worker::spawn(cc.egui_ctx.clone(), cam_cmd.clone());
         let _ = cmd.send(Cmd::SetGeometry(saved.geometry()));
@@ -224,6 +230,7 @@ impl OrbisApp {
                     TextureOptions::LINEAR,
                 )
             }),
+            model: crate::model::ModelPanel::new(&saved_root),
             log: VecDeque::new(),
         }
     }
@@ -262,6 +269,9 @@ impl OrbisApp {
     }
 
     fn handle_events(&mut self, ctx: &egui::Context) {
+        for line in self.model.poll() {
+            self.push_log(line);
+        }
         while let Ok(ev) = self.events.try_recv() {
             match ev {
                 Event::Connecting => {
@@ -352,6 +362,9 @@ impl OrbisApp {
                 }
                 Event::ScanFinished | Event::ScanStopped => {
                     if let Some(mut s) = self.scan.take() {
+                        if let Some(dir) = s.dir.clone() {
+                            self.model.scan_finished(dir);
+                        }
                         s.current = None;
                         s.waiting_ring = None;
                         self.last_scan = Some(s);
@@ -1081,6 +1094,7 @@ impl eframe::App for OrbisApp {
         // process ends, or the camera stays busy until it's power-cycled.
         if ctx.input(|i| i.viewport().close_requested()) && !self.shut_down {
             self.shut_down = true;
+            self.model.shutdown();
             let (done_tx, done_rx) = mpsc::channel();
             if self.cam_cmd.send(CamCmd::Shutdown(done_tx)).is_ok() {
                 let _ = done_rx.recv_timeout(Duration::from_secs(3));
@@ -1104,6 +1118,10 @@ impl eframe::App for OrbisApp {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(6.0);
                 self.scan_panel(ui);
+                ui.add_space(10.0);
+                ui.separator();
+                let scanning = self.scan.is_some();
+                self.model.ui(ui, &mut self.saved.model, &self.saved.scans_root, scanning);
                 ui.add_space(10.0);
                 ui.separator();
                 self.camera_panel(ui);

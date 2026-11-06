@@ -41,6 +41,7 @@ so it only needs power.
 | `firmware/` | ESP32 firmware: motor on core 1, Wi-Fi/TCP/discovery/serial on core 0 | ✅ tested on hardware |
 | `rig/` | PC library + `rig` CLI to drive the turntable | ✅ |
 | `fuji/` | Bindings + safe wrapper for Fujifilm `XAPI.dll`, and the `cam` test CLI | ✅ connects; capture awaits tether mode test |
+| `recon/` | Photogrammetry: background masks + COLMAP/OpenMVS pipeline, and the `recon` CLI | 🚧 in progress |
 | `app/` | `orbis` desktop app (egui): scan settings, angle wheel, turntable control, dry runs | ✅ turntable part |
 | `sdk/` | Your copy of the Fujifilm SDK (git-ignored) | local only |
 | `docs/img/`, `tools/*-art.ps1` | Logo, mascot, icons, social preview and the scripts that make them | ✅ |
@@ -160,6 +161,40 @@ to retry that position.
 
 Photos go to `Pictures\Orbis\<date>_<time>_<name>\ring1_001.JPG …`
 together with `scan.json` (angle, ring, files and time of every photo).
+
+### 3D model
+
+The **🧊 Build 3D model** section turns a scan into a textured mesh,
+`<scan>\model\model.obj`, right in the app. Pick the scan, a quality
+(Draft / Standard / High) and go. It runs in the background at low priority
+and can be cancelled.
+
+Orbis doesn't reconstruct anything itself. It prepares the photos and
+drives two open-source tools, both on the CPU, so no NVIDIA GPU is needed:
+
+| Step | Tool |
+|---|---|
+| Working copies + **background masks** | Orbis (`recon` crate) |
+| Features, matching, camera alignment, undistortion | [COLMAP](https://github.com/colmap/colmap) (BSD-3) |
+| Dense point cloud, mesh, texture | [OpenMVS](https://github.com/cdcseacave/openMVS) (AGPL-3) |
+
+**Why masks:** on a turntable the camera and background stand still while
+the object turns. To the reconstruction that's two worlds moving against
+each other. Within a ring, the per-pixel median of all photos is the static
+scene, so whatever differs from it is the object. Orbis masks out the rest
+(wall, stand, cables), with no ML model needed. Check the masks with
+`cargo run -p recon -- <scan folder> --masks-only`.
+
+**For good results:** 36+ photos per ring (Standard preset), 2–3 rings,
+f/8–f/11 so the whole object is sharp, even light, and an object with
+texture (plain white or shiny surfaces don't work; matte spray or a
+pattern helps).
+
+The tools aren't bundled. On first use Orbis downloads the official CPU
+builds (≈140 MB) into `%LOCALAPPDATA%\Orbis\tools`, or run
+`.\scripts\get-recon-tools.ps1`. They run as separate programs under their
+own licenses. Command line: `cargo run --release -p recon -- <scan folder>
+--quality draft|standard|high`.
 
 ### Camera setup (X-T4)
 

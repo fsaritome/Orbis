@@ -43,6 +43,16 @@ tests) runs in a visible terminal tab, not as hidden background output.
   `open_application("Orbis")` launches a new instance. To look at an
   already running window, just take a screenshot.
 
+## 3D reconstruction (`recon` crate)
+
+- COLMAP + OpenMVS CPU builds live in `%LOCALAPPDATA%\Orbis\tools`
+  (`scripts\get-recon-tools.ps1` or `recon --install`). This PC has an AMD
+  Radeon 780M, no NVIDIA: never use CUDA builds or CUDA-only steps
+  (COLMAP `patch_match_stereo`, Meshroom).
+- Output goes to `<scan>\model\`. The pipeline only wipes that folder if
+  it contains `orbis-recon.log`.
+- Reconstructions take minutes: run `recon` in a visible terminal tab.
+
 ## Installer
 
 `& .\scripts\package.ps1` (visible terminal tab, Orbis closed) builds

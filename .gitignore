@@ -9,3 +9,6 @@ XAPI.h
 
 # Scan output
 /scans/
+
+# OpenMVS writes <Tool>-<timestamp>.log into its working folder
+/*.log

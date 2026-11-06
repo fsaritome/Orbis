@@ -1,0 +1,16 @@
+[package]
+name = "recon"
+description = "Orbis photogrammetry: masks the turntable photos and drives COLMAP + OpenMVS to a textured mesh"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+serde_json = "1"
+
+[[bin]]
+name = "recon"
+path = "src/bin/recon.rs"

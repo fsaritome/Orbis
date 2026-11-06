@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["rig-protocol", "rig", "fuji", "app"]
+members = ["rig-protocol", "rig", "fuji", "recon", "app"]
 # The firmware targets the ESP32 (Xtensa) with Espressif's own toolchain,
 # so it is a separate workspace built from inside `firmware/`.
 exclude = ["firmware"]

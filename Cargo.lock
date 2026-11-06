@@ -2637,6 +2637,7 @@ dependencies = [
  "egui",
  "fuji",
  "image",
+ "recon",
  "rig",
  "serde",
  "serde_json",
@@ -3031,6 +3032,16 @@ dependencies = [
  "bytemuck",
  "font-types",
  "once_cell",
+]
+
+[[package]]
+name = "recon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "image",
+ "serde_json",
 ]
 
 [[package]]
