@@ -740,11 +740,16 @@ impl OrbisApp {
             .or_else(|| self.last_scan.as_ref().and_then(|s| s.dir.clone()))
             .unwrap_or_else(|| self.saved.scans_root.clone());
         ui.horizontal(|ui| {
-            ui.label(RichText::new(folder.display().to_string()).small().weak()).on_hover_text("Where photos are saved");
+            // Button first, then the path cut to the rest of the width: a long
+            // scan name must not widen the panel (it then slides under the
+            // preview and its left edge disappears).
             if ui.small_button("📂").on_hover_text("Open folder").clicked() {
                 let _ = std::fs::create_dir_all(&folder);
                 let _ = std::process::Command::new("explorer").arg(&folder).spawn();
             }
+            let path = folder.display().to_string();
+            ui.add(egui::Label::new(RichText::new(&path).small().weak()).truncate())
+                .on_hover_text(format!("Where photos are saved:\n{path}"));
         });
     }
 
