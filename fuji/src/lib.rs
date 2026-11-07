@@ -964,6 +964,28 @@ impl Camera<'_> {
     /// [`Sdk::open_first`]); some values need a matching mode (e.g. shutter
     /// speeds only in M and S).
     pub fn set(&self, s: Setting, v: i32) -> Result<()> {
+        // Right after connecting (or while it saves a photo) the camera
+        // answers BUSY; Fujifilm's samples simply try again. Up to ~3 s.
+        let mut tries = 0;
+        loop {
+            let r = self.set_once(s, v);
+            if r.is_err() && self.last_busy() && tries < 30 {
+                tries += 1;
+                sleep(Duration::from_millis(100));
+                continue;
+            }
+            return r;
+        }
+    }
+
+    /// The last call failed only because the camera was busy.
+    fn last_busy(&self) -> bool {
+        let (mut api, mut code) = (0, 0);
+        unsafe { (self.sdk.f.get_error_number)(self.h, &mut api, &mut code) };
+        matches!(code, XSDK_ERRCODE_BUSY | XSDK_ERRCODE_FORCEMODE_BUSY | XSDK_ERRCODE_RUNNING_OTHER_FUNCTION)
+    }
+
+    fn set_once(&self, s: Setting, v: i32) -> Result<()> {
         let f = &self.sdk.f;
         let h = self.h;
         let (api, ret) = unsafe {
