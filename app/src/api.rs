@@ -34,7 +34,10 @@ POST /scan/pause | /scan/resume | /scan/stop | /scan/continue   (continue = next
 GET  /camera                       settings, values and choices
 POST /camera                       {\"Aperture\": \"F8\", \"ISO\": 160, ...}  (name or raw value)
 GET  /camera/diag                  buffer, card recording, priority, last error
-POST /camera/wifi                  {ip: \"192.168.1.60\"} wireless tethering after USB (\"\" = USB only)
+GET  /connections                  how camera and turntable are reached
+POST /connections                  {camera: {mode: auto|usb|wifi, ip}, turntable: {mode: auto|wifi|usb, host, port}}
+POST /camera/search                {range: \"192.168.1\"} optional; lists cameras on USB and Wi-Fi
+GET  /turntable/search             turntables on the network + serial ports
 POST /camera/preset                photogrammetry settings
 POST /camera/test-shot
 POST /camera/live                  {on: true}

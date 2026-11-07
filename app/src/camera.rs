@@ -4,6 +4,7 @@
 //! nowhere else. Other threads send [`CamCmd`]s; captures answer on their
 //! own reply channel, everything else is reported as [`CamEvent`]s.
 
+use crate::connection::SharedCameraConn;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -24,6 +25,11 @@ pub enum CamCmd {
     /// Move the focus point to (x, y) in the photo (0..1, top-left
     /// origin) and autofocus there.
     FocusAt { x: f32, y: f32 },
+    /// Drop the connection and connect again (e.g. after changing how).
+    Reconnect,
+    /// List cameras on USB and Wi-Fi (`range`: an address or "a.b.c" to
+    /// scan; None = local network search).
+    Search { range: Option<String>, reply: Sender<Result<Vec<fuji::FoundCamera>, String>> },
     /// Troubleshooting values (see `fuji::Camera::diagnostics`).
     Diagnose(Sender<Vec<(String, String)>>),
     /// Stop live view and give control back to the camera; answers on
@@ -77,15 +83,12 @@ const IMAGE_TIMEOUT: Duration = Duration::from_secs(120);
 pub const PREVIEW_PX: u32 = 1280;
 pub const THUMB_PX: u32 = 200;
 
-/// Wi-Fi address of the camera (empty = USB only), shared with the app.
-pub type WifiAddr = std::sync::Arc<std::sync::Mutex<String>>;
-
-pub fn spawn(ctx: egui::Context, wifi: WifiAddr) -> (Sender<CamCmd>, Receiver<CamEvent>) {
+pub fn spawn(ctx: egui::Context, conn: SharedCameraConn) -> (Sender<CamCmd>, Receiver<CamEvent>) {
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let (ev_tx, ev_rx) = mpsc::channel();
     thread::Builder::new()
         .name("camera".into())
-        .spawn(move || run(cmd_rx, Emitter { tx: ev_tx, ctx }, wifi))
+        .spawn(move || run(cmd_rx, Emitter { tx: ev_tx, ctx }, conn))
         .expect("spawn camera thread");
     (cmd_tx, ev_rx)
 }
@@ -103,7 +106,7 @@ impl Emitter {
 }
 
 /// Fail any capture requests that arrive while there is no camera.
-fn refuse_pending(cmds: &Receiver<CamCmd>, out: &Emitter, why: &str, wait: Duration) -> bool {
+fn refuse_pending(cmds: &Receiver<CamCmd>, out: &Emitter, why: &str, wait: Duration, sdk: Option<&fuji::Sdk>) -> bool {
     let until = Instant::now() + wait;
     while Instant::now() < until {
         match cmds.recv_timeout(Duration::from_millis(100)) {
@@ -116,6 +119,13 @@ fn refuse_pending(cmds: &Receiver<CamCmd>, out: &Emitter, why: &str, wait: Durat
             Ok(CamCmd::Diagnose(reply)) => {
                 let _ = reply.send(vec![("state".into(), why.to_owned())]);
             }
+            Ok(CamCmd::Search { range, reply }) => {
+                let _ = reply.send(match sdk {
+                    Some(sdk) => search(sdk, range.as_deref()),
+                    None => Err(why.to_owned()),
+                });
+            }
+            Ok(CamCmd::Reconnect) => return true,
             Ok(CamCmd::Shutdown(done)) => {
                 let _ = done.send(());
                 return false;
@@ -133,8 +143,8 @@ fn friendly(e: &anyhow::Error) -> String {
     if s.contains("not in tether mode") {
         "Camera found, but not in tether mode: set CONNECTION MODE → USB TETHER SHOOTING AUTO, then replug USB"
             .into()
-    } else if s.contains("no camera answering at") {
-        s.trim_start_matches("No camera on USB, and ").to_owned()
+    } else if s.contains("no camera answering at") || s.contains("local network") {
+        s.replace("no Fujifilm camera found on USB. Is it on, connected, and set to CONNECTION MODE → USB TETHER SHOOTING AUTO?; and ", "No camera on USB, and ")
     } else if s.contains("no Fujifilm camera found") {
         "No camera on USB: switched off, unplugged or asleep? Half-press the shutter to wake it".into()
     } else if s.contains("SDK not found") {
@@ -144,7 +154,27 @@ fn friendly(e: &anyhow::Error) -> String {
     }
 }
 
-fn run(cmds: Receiver<CamCmd>, out: Emitter, wifi: WifiAddr) {
+/// Cameras on USB and over Wi-Fi.
+fn search(sdk: &fuji::Sdk, range: Option<&str>) -> Result<Vec<fuji::FoundCamera>, String> {
+    let wifi = match range.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(r) => fuji::Link::Wifi(r.to_owned()),
+        None => fuji::Link::WifiSearch,
+    };
+    let mut all = Vec::new();
+    let mut errors = Vec::new();
+    for link in [fuji::Link::Usb, wifi] {
+        match sdk.list(&link) {
+            Ok(v) => all.extend(v),
+            Err(e) => errors.push(format!("{link}: {e:#}")),
+        }
+    }
+    if all.is_empty() && !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    Ok(all)
+}
+
+fn run(cmds: Receiver<CamCmd>, out: Emitter, conn: SharedCameraConn) {
     let mut last_problem = String::new();
     loop {
         out.send(CamEvent::Searching);
@@ -155,22 +185,28 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter, wifi: WifiAddr) {
             Err(e) => {
                 let msg = friendly(&e);
                 out.send(CamEvent::Problem(msg.clone()));
-                if !refuse_pending(&cmds, &out, &msg, Duration::from_secs(10)) {
+                if !refuse_pending(&cmds, &out, &msg, Duration::from_secs(10), None) {
                     return;
                 }
                 continue;
             }
         };
-        // USB first; then Wi-Fi tethering if an address is set.
-        let ip = wifi.lock().map(|s| s.trim().to_owned()).unwrap_or_default();
+        // Try the configured links in order (Connections window).
+        let links = conn.lock().map(|c| c.links()).unwrap_or_else(|_| vec![fuji::Link::Usb]);
         let mut link = fuji::Link::Usb;
-        let cam = match match sdk.open(&link) {
-            Err(e) if !ip.is_empty() && format!("{e:#}").contains("no Fujifilm camera found") => {
-                link = fuji::Link::Wifi(ip.clone());
-                sdk.open(&link).map_err(|w| anyhow::anyhow!("No camera on USB, and {w:#}"))
+        let mut errors: Vec<String> = Vec::new();
+        let mut opened = None;
+        for l in links {
+            match sdk.open(&l) {
+                Ok(c) => {
+                    link = l;
+                    opened = Some(c);
+                    break;
+                }
+                Err(e) => errors.push(format!("{e:#}")),
             }
-            r => r,
-        } {
+        }
+        let cam = match opened.ok_or_else(|| anyhow::anyhow!("{}", errors.join("; and "))) {
             Ok(c) => c,
             Err(e) => {
                 let msg = friendly(&e);
@@ -180,7 +216,7 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter, wifi: WifiAddr) {
                 }
                 out.send(CamEvent::Problem(msg.clone()));
                 // `sdk` is dropped (XSDK_Exit) at the end of this iteration.
-                if !refuse_pending(&cmds, &out, &msg, RETRY) {
+                if !refuse_pending(&cmds, &out, &msg, RETRY, Some(&sdk)) {
                     return;
                 }
                 continue;
@@ -242,6 +278,17 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter, wifi: WifiAddr) {
                             out.send(CamEvent::Focused(false));
                         }
                     }
+                }
+                Ok(CamCmd::Reconnect) => {
+                    if live {
+                        let _ = cam.stop_live_view();
+                        out.send(CamEvent::Live(false));
+                    }
+                    out.send(CamEvent::Log("Camera: reconnecting".into()));
+                    break;
+                }
+                Ok(CamCmd::Search { range, reply }) => {
+                    let _ = reply.send(search(&sdk, range.as_deref()));
                 }
                 Ok(CamCmd::Diagnose(reply)) => {
                     let mut d = cam.diagnostics();

@@ -5,6 +5,7 @@
 //! BOOT-button presses and runs scans step by step so Pause/Stop stay
 //! responsive. For real scans it asks the camera thread for each photo.
 
+use crate::connection::TableConn;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
@@ -26,6 +27,8 @@ pub struct ScanOutput {
 
 pub enum Cmd {
     Reconnect,
+    /// Change how to reach the turntable (and reconnect).
+    SetConnection(TableConn),
     SetGeometry(Geometry),
     /// Top speed and acceleration in steps/s and steps/s².
     SetMotion { max_speed: u32, accel: u32 },
@@ -123,13 +126,13 @@ impl ScanRun {
     }
 }
 
-pub fn spawn(ctx: egui::Context, camera: Sender<CamCmd>) -> (Sender<Cmd>, Receiver<Event>) {
+pub fn spawn(ctx: egui::Context, camera: Sender<CamCmd>, conn: TableConn) -> (Sender<Cmd>, Receiver<Event>) {
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let (ev_tx, ev_rx) = mpsc::channel();
     thread::Builder::new()
         .name("turntable".into())
         .spawn(move || {
-            Worker { rig: None, geo: Geometry::default(), scan: None, camera, events: ev_tx, ctx }.run(cmd_rx)
+            Worker { rig: None, geo: Geometry::default(), scan: None, camera, events: ev_tx, ctx, conn }.run(cmd_rx)
         })
         .expect("spawn turntable thread");
     (cmd_tx, ev_rx)
@@ -142,6 +145,7 @@ struct Worker {
     camera: Sender<CamCmd>,
     events: Sender<Event>,
     ctx: egui::Context,
+    conn: TableConn,
 }
 
 impl Worker {
@@ -185,7 +189,7 @@ impl Worker {
     fn connect(&mut self, cmds: &Receiver<Cmd>) -> bool {
         loop {
             self.emit(Event::Connecting);
-            match Rig::open_auto() {
+            match self.conn.open() {
                 Ok(rig) => {
                     let how = rig.description().to_owned();
                     self.rig = Some(rig);
@@ -200,6 +204,10 @@ impl Worker {
             while Instant::now() < until {
                 match cmds.recv_timeout(Duration::from_millis(100)) {
                     Ok(Cmd::Reconnect) => break,
+                    Ok(Cmd::SetConnection(c)) => {
+                        self.conn = c;
+                        break;
+                    }
                     Ok(Cmd::SetGeometry(g)) => self.geo = g,
                     Ok(_) => {} // needs a connection; drop
                     Err(RecvTimeoutError::Timeout) => {}
@@ -245,6 +253,13 @@ impl Worker {
         let scanning = self.scan.is_some();
         let geo = self.geo;
         match cmd {
+            Cmd::SetConnection(c) => {
+                self.conn = c;
+                self.rig = None;
+                if self.scan.take().is_some() {
+                    self.emit(Event::ScanStopped);
+                }
+            }
             Cmd::Reconnect => {
                 self.rig = None;
                 if self.scan.take().is_some() {

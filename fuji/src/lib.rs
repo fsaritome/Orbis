@@ -80,6 +80,7 @@ struct Fns {
     init: FnInit,
     exit: FnExit,
     detect: FnDetect,
+    append: FnAppend,
     open_ex: FnOpenEx,
     close: FnClose,
     get_error_number: FnGetErrorNumber,
@@ -120,6 +121,8 @@ struct Fns {
     focus_area_cap: FnCapFocusArea,
     get_prop: FnGetProp1,
     get_prop6: FnGetProp6,
+    get_prop_in1_out1: FnGetPropIn1Out1,
+    get_prop_in1_out4: FnGetPropIn1Out4,
     cap_prop: FnCapProp2,
 }
 
@@ -162,6 +165,7 @@ impl Sdk {
             init: sym!("XSDK_Init"),
             exit: sym!("XSDK_Exit"),
             detect: sym!("XSDK_Detect"),
+            append: sym!("XSDK_Append"),
             open_ex: sym!("XSDK_OpenEx"),
             close: sym!("XSDK_Close"),
             get_error_number: sym!("XSDK_GetErrorNumber"),
@@ -201,6 +205,8 @@ impl Sdk {
             focus_area_cap: sym!("XSDK_CapProp"),
             get_prop: sym!("XSDK_GetProp"),
             get_prop6: sym!("XSDK_GetProp"),
+            get_prop_in1_out1: sym!("XSDK_GetProp"),
+            get_prop_in1_out4: sym!("XSDK_GetProp"),
             cap_prop: sym!("XSDK_CapProp"),
         };
         // Like Fujifilm's ReleaseButton sample, pass NULL: the SDK finds its
@@ -246,6 +252,41 @@ impl Sdk {
             bail!("XSDK_Detect failed: {}", self.last_error(ptr::null_mut()));
         }
         Ok(n.max(0) as u32)
+    }
+
+    /// Cameras found on `link`, with model and address. For Wi-Fi, `link`
+    /// can be `WifiSearch` (local network) or `Wifi("192.168.1")` for a
+    /// whole /24 range ("a.b.c.d-a.b.c.e" and comma lists work too).
+    pub fn list(&self, link: &Link) -> Result<Vec<FoundCamera>> {
+        let n = self.detect_on(link)?;
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        let mut count: Long = n as Long;
+        let mut list: Vec<XSDK_CameraList> = (0..count).map(|_| unsafe { std::mem::zeroed() }).collect();
+        let addr = match link {
+            Link::Wifi(ip) => Some(CString::new(ip.trim()).context("bad IP address")?),
+            _ => None,
+        };
+        let iface = match link {
+            Link::Usb => XSDK_DSC_IF_USB,
+            Link::Wifi(_) => XSDK_DSC_IF_WIFI_IP,
+            Link::WifiSearch => XSDK_DSC_IF_WIFI_LOCAL,
+        };
+        let p = addr.as_ref().map_or(ptr::null_mut(), |a| a.as_ptr() as *mut i8);
+        let ret = unsafe { (self.f.append)(iface, p, ptr::null_mut(), &mut count, list.as_mut_ptr()) };
+        if ret != XSDK_COMPLETE {
+            bail!("XSDK_Append failed: {}", self.last_error(ptr::null_mut()));
+        }
+        list.truncate(count.clamp(0, n as Long) as usize);
+        Ok(list
+            .iter()
+            .filter(|c| c.b_valid != 0)
+            .map(|c| {
+                let (product, serial, ip, framework) = (c.str_product, c.str_serial_no, c.str_ip_address, c.str_framework);
+                FoundCamera { product: cstr(&product), serial: cstr(&serial), ip: cstr(&ip), framework: cstr(&framework) }
+            })
+            .collect())
     }
 
     /// Open the first USB camera in tether mode and take control (PC priority).
@@ -437,6 +478,18 @@ pub struct Shot {
 }
 
 /// An open camera. Gives control back to the camera and closes on drop.
+/// A camera seen by [`Sdk::list`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundCamera {
+    pub product: String,
+    /// USB only.
+    pub serial: String,
+    /// Network only.
+    pub ip: String,
+    /// "USB", "IP" (Wi-Fi) or "ETHER".
+    pub framework: String,
+}
+
 /// How to reach the camera.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Link {
@@ -547,6 +600,11 @@ impl Camera<'_> {
         d.push(("priority".into(), if r == XSDK_COMPLETE { (if prio == XSDK_PRIORITY_PC { "PC" } else { "camera" }).into() } else { self.sdk.last_error(self.h) }));
         d.push(("custom auto power-off".into(), self.get_prop(API_CODE_GET_CUSTOM_AUTO_POWER_OFF).map(|v| v.to_string()).unwrap_or_else(|e| format!("{e:#}"))));
         d.push(("battery raw [body, grip1, grip2, body %, grip1 %, grip2 %]".into(), self.battery_raw().map(|v| format!("{v:?}")).unwrap_or_else(|e| format!("{e:#}"))));
+        for slot in [1, 2] {
+            let st = self.card_status(slot).map(str::to_owned).unwrap_or_else(|e| format!("{e:#}"));
+            let left = self.card_frames_left(slot).map(|n| format!(", {n} frames left")).unwrap_or_default();
+            d.push((format!("card slot {slot}"), format!("{st}{left}")));
+        }
         d.push(("last error".into(), self.sdk.last_error(self.h)));
         d
     }
@@ -815,6 +873,35 @@ impl Camera<'_> {
             _ if (0..=100).contains(&pct) => Some(pct as u8),
             _ => None,
         })
+    }
+
+    /// State of the card in slot `slot` (1 or 2), in words.
+    pub fn card_status(&self, slot: i32) -> Result<&'static str> {
+        let mut st = 0;
+        self.call("XSDK_GetProp(GetMediaStatus)", unsafe {
+            (self.sdk.f.get_prop_in1_out1)(self.h, API_CODE_GET_MEDIA_STATUS, 2, slot, &mut st)
+        })?;
+        Ok(match st {
+            1 => "OK",
+            2 => "write protected",
+            3 => "no card",
+            4 => "unformatted",
+            5 => "card error",
+            6 => "frame number at 9999",
+            7 => "FULL",
+            8 => "accessing",
+            9 => "incompatible",
+            _ => "unknown",
+        })
+    }
+
+    /// Photos that still fit on the card in slot `slot`.
+    pub fn card_frames_left(&self, slot: i32) -> Result<i32> {
+        let (mut frames, mut sectors, mut sector_size, mut size) = (0, 0, 0, 0);
+        self.call("XSDK_GetProp(GetMediaCapacity)", unsafe {
+            (self.sdk.f.get_prop_in1_out4)(self.h, API_CODE_GET_MEDIA_CAPACITY, 5, slot, &mut frames, &mut sectors, &mut sector_size, &mut size)
+        })?;
+        Ok(frames)
     }
 
     /// Raw battery values, for diagnostics.

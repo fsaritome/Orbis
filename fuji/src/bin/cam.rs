@@ -32,6 +32,10 @@ enum Cmd {
         /// Number of pictures.
         #[arg(long, default_value_t = 1)]
         count: u32,
+        /// Before each shot, query like the app does: values, choices
+        /// (Cap*), battery (all|values|choices|battery).
+        #[arg(long)]
+        probe: Option<String>,
     },
     /// Every setting with its current value and the values it accepts.
     Settings,
@@ -52,6 +56,12 @@ enum Cmd {
         #[arg(long, default_value = "scans/test/live.jpg")]
         out: PathBuf,
     },
+    /// List cameras: USB, the local network, or (with --range) an address
+    /// range like 192.168.1 (runs without opening a camera).
+    Search {
+        #[arg(long)]
+        range: Option<String>,
+    },
     /// Read (or with --set write) the custom auto power-off value.
     PowerOff {
         #[arg(long)]
@@ -59,6 +69,12 @@ enum Cmd {
     },
     /// Buffer, card recording, priority and last error.
     Diag,
+    /// Read (or with --set 1-4 write) where the camera records:
+    /// 1 RAW+JPEG to card, 2 RAW, 3 JPEG, 4 off (PC only).
+    MediaRecord {
+        #[arg(long)]
+        set: Option<i32>,
+    },
     /// Save any images still waiting in the camera's transfer buffer.
     Drain {
         #[arg(long, default_value = "scans/test")]
@@ -70,6 +86,25 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let sdk = fuji::Sdk::load()?;
     eprintln!("Fujifilm SDK {} from {}", sdk.version(), sdk.dir().display());
+    if let Cmd::Search { range } = &cli.cmd {
+        let mut links = vec![fuji::Link::Usb, fuji::Link::WifiSearch];
+        if let Some(r) = range {
+            links.push(fuji::Link::Wifi(r.clone()));
+        }
+        for link in links {
+            let t = Instant::now();
+            match sdk.list(&link) {
+                Ok(v) => {
+                    println!("{link:12} {} found in {:.1} s", v.len(), t.elapsed().as_secs_f32());
+                    for c in v {
+                        println!("    {}  serial {}  ip {}  via {}", c.product, c.serial, c.ip, c.framework);
+                    }
+                }
+                Err(e) => println!("{link:12} error: {e:#}"),
+            }
+        }
+        return Ok(());
+    }
     let link = match cli.ip.as_deref() {
         None => fuji::Link::Usb,
         Some("search") => fuji::Link::WifiSearch,
@@ -108,9 +143,44 @@ fn main() -> Result<()> {
             println!("buffered  : {}", cam.buffered().map(|n| n.to_string()).unwrap_or_else(|e| format!("({e})")));
             println!("PC control: {}", cam.priority_is_pc().map(|b| b.to_string()).unwrap_or_else(|e| format!("({e})")));
         }
-        Cmd::Shoot { out, no_af, count } => {
+        Cmd::Shoot { out, no_af, count, probe } => {
             std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
             for n in 1..=count {
+                if let Some(p) = probe.as_deref() {
+                    if matches!(p, "all" | "values") {
+                        let _ = cam.values();
+                    }
+                    if matches!(p, "all" | "choices") {
+                        let _ = cam.choices();
+                    }
+                    if matches!(p, "all" | "battery") {
+                        let _ = cam.battery();
+                    }
+                    if let Some(i) = p.strip_prefix("preset").and_then(|n| n.parse::<usize>().ok()) {
+                        if let Some(&(st, v)) = fuji::settings::photogrammetry_preset().get(i) {
+                            println!("    set {} = {}", st.label(), st.value_name(v));
+                            if let Err(e) = cam.set(st, v) {
+                                println!("    set {}: {e:#}", st.label());
+                            }
+                        }
+                    }
+                    if p == "preset" {
+                        for (st, v) in fuji::settings::photogrammetry_preset() {
+                            if let Err(e) = cam.set(st, v) {
+                                println!("    set {}: {e:#}", st.label());
+                            }
+                        }
+                    }
+                    if p == "mf" {
+                        if let Err(e) = cam.set(fuji::Setting::Focus, fuji::ffi::SDK_FOCUS_MANUAL) {
+                            println!("    set focus: {e:#}");
+                        }
+                    }
+                    if matches!(p, "all" | "drain") {
+                        while let Ok(Some(_)) = cam.next_image() {}
+                    }
+                    println!("    probed: {p}");
+                }
                 let t = Instant::now();
                 let shot = cam.shoot(!no_af)?;
                 let fired = t.elapsed();
@@ -183,11 +253,19 @@ fn main() -> Result<()> {
                 None => println!("no live view frames arrived"),
             }
         }
+        Cmd::Search { .. } => unreachable!(),
         Cmd::PowerOff { set } => {
             println!("custom auto power-off now: {}", cam.custom_power_off()?);
             if let Some(v) = set {
                 cam.set_custom_power_off(v)?;
                 println!("set to {v}; reads back: {}", cam.custom_power_off()?);
+            }
+        }
+        Cmd::MediaRecord { set } => {
+            println!("media record now: {}", cam.media_record()?);
+            if let Some(v) = set {
+                cam.set_media_record(v)?;
+                println!("set to {v}; reads back: {}", cam.media_record()?);
             }
         }
         Cmd::Diag => {

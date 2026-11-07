@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use super::{CamState, Link, OrbisApp};
 use crate::api::{Call, Reply, HELP};
 use crate::camera::CamCmd;
+use crate::connection::{CameraMode, TableMode};
 use crate::plan::Preset;
 use crate::worker::Cmd;
 
@@ -42,6 +43,38 @@ impl OrbisApp {
                 });
             });
             ctx.request_repaint();
+            return;
+        }
+        if (method.as_str(), path.as_str()) == ("POST", "/camera/search") {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let range = body.get("range").and_then(Value::as_str).map(str::to_owned);
+            let _ = self.cam_cmd.send(CamCmd::Search { range, reply: tx });
+            std::thread::spawn(move || {
+                let r = match rx.recv_timeout(std::time::Duration::from_secs(90)) {
+                    Ok(Ok(v)) => Reply::ok(json!({ "cameras": v.iter().map(|c| json!({
+                        "model": c.product, "ip": c.ip, "serial": c.serial, "via": c.framework,
+                    })).collect::<Vec<_>>() })),
+                    Ok(Err(e)) => Reply::err(409, e),
+                    Err(_) => Reply::err(504, "camera thread busy"),
+                };
+                let _ = reply.send(r);
+            });
+            return;
+        }
+        if (method.as_str(), path.as_str()) == ("GET", "/turntable/search") {
+            std::thread::spawn(move || {
+                let found: Vec<Value> = rig::discover(std::time::Duration::from_millis(2000))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|f| json!({ "ip": f.addr.ip().to_string(), "port": f.addr.port(), "protocol": f.version }))
+                    .collect();
+                let ports: Vec<Value> = rig::list_serial_ports()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(name, hint)| json!({ "port": name, "info": hint }))
+                    .collect();
+                let _ = reply.send(Reply::ok(json!({ "network": found, "serial_ports": ports })));
+            });
             return;
         }
         if (method.as_str(), path.as_str()) == ("GET", "/camera/diag") {
@@ -170,13 +203,41 @@ impl OrbisApp {
                 }
                 Ok(Reply::ok(json!({ "ok": true, "set": changes.iter().map(|(s, v)| json!({ "setting": s.label(), "value": v, "name": s.value_name(*v) })).collect::<Vec<_>>() })))
             }
-            ("POST", "/camera/wifi") => {
-                let ip = body.get("ip").and_then(Value::as_str).ok_or_else(|| Reply::err(400, "send {\"ip\": \"192.168.…\"} or {\"ip\": \"\"} for USB only"))?;
-                self.saved.camera_ip = ip.trim().to_owned();
-                if let Ok(mut w) = self.cam_wifi.lock() {
-                    *w = self.saved.camera_ip.clone();
+            ("GET", "/connections") => Ok(Reply::ok(self.connections_json())),
+            ("POST", "/connections") => {
+                if let Some(c) = body.get("camera") {
+                    if let Some(m) = c.get("mode").and_then(Value::as_str) {
+                        self.saved.camera_conn.mode =
+                            CameraMode::parse(m).ok_or_else(|| Reply::err(400, "camera.mode: auto, usb or wifi"))?;
+                    }
+                    if let Some(ip) = c.get("ip").and_then(Value::as_str) {
+                        self.saved.camera_conn.ip = ip.trim().to_owned();
+                    }
+                    self.apply_camera_conn();
                 }
-                done("camera Wi-Fi address set (used when no USB camera is found)")
+                if let Some(t) = body.get("turntable") {
+                    idle("change the turntable connection")?;
+                    if let Some(m) = t.get("mode").and_then(Value::as_str) {
+                        self.saved.table_conn.mode =
+                            TableMode::parse(m).ok_or_else(|| Reply::err(400, "turntable.mode: auto, wifi or usb"))?;
+                    }
+                    if let Some(h) = t.get("host").and_then(Value::as_str) {
+                        self.saved.table_conn.host = h.trim().to_owned();
+                    }
+                    if let Some(p) = t.get("port").and_then(Value::as_str) {
+                        self.saved.table_conn.port = p.trim().to_owned();
+                    }
+                    self.apply_table_conn();
+                }
+                Ok(Reply::ok(self.connections_json()))
+            }
+            ("POST", "/camera/wifi") => {
+                // Shortcut: Wi-Fi address with automatic mode.
+                let ip = body.get("ip").and_then(Value::as_str).ok_or_else(|| Reply::err(400, "send {\"ip\": \"192.168.1.60\"}"))?;
+                self.saved.camera_conn.ip = ip.trim().to_owned();
+                self.saved.camera_conn.mode = CameraMode::Auto;
+                self.apply_camera_conn();
+                Ok(Reply::ok(self.connections_json()))
             }
             ("POST", "/camera/preset") => {
                 idle("change camera settings")?;
@@ -261,6 +322,10 @@ impl OrbisApp {
             }
 
             // ---- UI
+            ("POST", "/ui/connections") => {
+                self.conn_ui.open = body.get("open").and_then(Value::as_bool).unwrap_or(true);
+                done("connections window")
+            }
             ("POST", "/ui/zoom") => {
                 let f = num(body, "factor")?.clamp(0.6, 2.5) as f32;
                 ctx.set_zoom_factor(f);
@@ -294,6 +359,17 @@ impl OrbisApp {
             })
     }
 
+    fn connections_json(&self) -> Value {
+        json!({
+            "camera": { "mode": self.saved.camera_conn.mode.key(), "ip": self.saved.camera_conn.ip },
+            "turntable": {
+                "mode": self.saved.table_conn.mode.key(),
+                "host": self.saved.table_conn.host,
+                "port": self.saved.table_conn.port,
+            },
+        })
+    }
+
     fn camera_json(&self) -> Value {
         let settings: serde_json::Map<String, Value> = Setting::ALL
             .into_iter()
@@ -323,7 +399,7 @@ impl OrbisApp {
             Link::Down(why) => json!({ "state": "down", "why": why }),
         };
         let camera = match &self.cam {
-            CamState::Searching => json!({ "state": "searching", "wifi_ip": self.saved.camera_ip }),
+            CamState::Searching => json!({ "state": "searching" }),
             CamState::Connected(i) => json!({
                 "state": "connected", "model": i.model, "lens": i.lens, "link": i.link,
                 "settings": self.cam_values.as_ref().map(|v| Setting::ALL.into_iter()

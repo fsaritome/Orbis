@@ -26,6 +26,7 @@ use crate::plan::{self, format_duration, Preset, ScanPlan, ScanSettings};
 use crate::wheel::{self, WheelState};
 use crate::worker::{self, Cmd, Event, ScanOutput};
 
+mod connections;
 mod control;
 
 const GREEN: Color32 = Color32::from_rgb(0x3D, 0xC2, 0x6B);
@@ -56,8 +57,13 @@ struct Saved {
     model: crate::model::ModelSettings,
     /// UI zoom (Ctrl +/- or A−/A+ in the top bar).
     zoom: f32,
-    /// Camera's Wi-Fi address for wireless tethering (empty = USB only).
+    /// Old single Wi-Fi field; moved into `camera_conn.ip` on load.
+    #[serde(skip_serializing)]
     camera_ip: String,
+    /// How to reach the camera (Connections window).
+    camera_conn: crate::connection::CameraConn,
+    /// How to reach the turntable (Connections window).
+    table_conn: crate::connection::TableConn,
 }
 
 fn default_scans_root() -> PathBuf {
@@ -81,6 +87,8 @@ impl Default for Saved {
             model: Default::default(),
             zoom: 1.0,
             camera_ip: String::new(),
+            camera_conn: Default::default(),
+            table_conn: Default::default(),
         }
     }
 }
@@ -174,8 +182,10 @@ pub struct OrbisApp {
     link: Link,
     cam: CamState,
     cam_values: Option<Values>,
-    /// Shared with the camera thread: Wi-Fi address to try after USB.
-    cam_wifi: camera::WifiAddr,
+    /// Shared with the camera thread: how to reach the camera.
+    cam_conn: crate::connection::SharedCameraConn,
+    /// The Connections window.
+    conn_ui: connections::ConnUi,
     /// Camera battery in percent.
     cam_battery: Option<u8>,
     cam_choices: Choices,
@@ -216,9 +226,14 @@ impl OrbisApp {
         let saved: Saved = cc.storage.and_then(|s| eframe::get_value(s, eframe::APP_KEY)).unwrap_or_default();
         let saved_root = saved.scans_root.clone();
         setup_fonts(&cc.egui_ctx, saved.zoom);
-        let cam_wifi: camera::WifiAddr = std::sync::Arc::new(std::sync::Mutex::new(saved.camera_ip.clone()));
-        let (cam_cmd, cam_events) = camera::spawn(cc.egui_ctx.clone(), cam_wifi.clone());
-        let (cmd, events) = worker::spawn(cc.egui_ctx.clone(), cam_cmd.clone());
+        let mut saved = saved;
+        if saved.camera_conn.ip.is_empty() && !saved.camera_ip.trim().is_empty() {
+            saved.camera_conn.ip = std::mem::take(&mut saved.camera_ip).trim().to_owned();
+        }
+        let cam_conn: crate::connection::SharedCameraConn =
+            std::sync::Arc::new(std::sync::Mutex::new(saved.camera_conn.clone()));
+        let (cam_cmd, cam_events) = camera::spawn(cc.egui_ctx.clone(), cam_conn.clone());
+        let (cmd, events) = worker::spawn(cc.egui_ctx.clone(), cam_cmd.clone(), saved.table_conn.clone());
         let _ = cmd.send(Cmd::SetGeometry(saved.geometry()));
         let (loaded_tx, loaded_rx) = mpsc::channel();
         let mut app = Self {
@@ -230,7 +245,8 @@ impl OrbisApp {
             link: Link::Connecting,
             cam: CamState::Searching,
             cam_values: None,
-            cam_wifi,
+            cam_conn,
+            conn_ui: Default::default(),
             cam_battery: None,
             cam_choices: Choices::default(),
             zeroed: false,
@@ -550,6 +566,9 @@ impl OrbisApp {
                 self.link = Link::Connecting;
                 self.send(Cmd::Reconnect);
             }
+            if ui.small_button("🔌").on_hover_text("Connections: USB / Wi-Fi for camera and turntable").clicked() {
+                self.conn_ui.open = !self.conn_ui.open;
+            }
             ui.separator();
             let (color, text, hover) = match &self.cam {
                 CamState::Searching => (AMBER, "Camera: searching…".to_owned(), None),
@@ -791,21 +810,12 @@ impl OrbisApp {
                 ui.label(RichText::new("reading settings…").weak());
             }
             _ => {
-                ui.label(RichText::new("Not connected. Camera on USB in USB TETHER SHOOTING AUTO mode.").weak());
+                ui.label(RichText::new("Not connected. See 🔌 Connections (USB or Wi-Fi).").weak());
             }
         }
-        ui.horizontal(|ui| {
-            ui.label("Wi-Fi address").on_hover_text(
-                "For wireless tethering: the camera's IP (camera: PC CONNECTION MODE → WIRELESS TETHER SHOOTING FIXED).
-                 Orbis tries USB first, then this address. Empty = USB only. Over Wi-Fi each photo takes longer to arrive.",
-            );
-            let r = ui.add(egui::TextEdit::singleline(&mut self.saved.camera_ip).hint_text("USB only").desired_width(150.0));
-            if r.lost_focus() || r.changed() {
-                if let Ok(mut w) = self.cam_wifi.lock() {
-                    *w = self.saved.camera_ip.trim().to_owned();
-                }
-            }
-        });
+        if ui.button("🔌 Connections…").on_hover_text("USB or Wi-Fi, camera search, turntable address/port").clicked() {
+            self.conn_ui.open = true;
+        }
         ui.checkbox(&mut self.saved.autofocus, "Autofocus before every photo")
             .on_hover_text("Off: the camera keeps its current focus (best with manual focus set once).");
         let can_test = self.camera_ready() && self.scan.is_none() && !self.test_shot_busy;
@@ -1224,6 +1234,7 @@ impl eframe::App for OrbisApp {
         egui::CentralPanel::default().show(ui, |ui| self.center(ui, &ctx));
 
         self.ring_dialog(&ctx);
+        self.connections_window(&ctx);
         // Keep the elapsed timer and status fresh.
         ctx.request_repaint_after(Duration::from_millis(250));
     }

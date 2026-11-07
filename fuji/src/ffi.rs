@@ -256,3 +256,21 @@ pub const AUTO_POWER_OFF_2_MIN: Long = 111;
 pub const API_CODE_CHECK_BATTERY_INFO: Long = 0x4055;
 pub type FnGetProp6 =
     unsafe extern "C" fn(XSDK_HANDLE, Long, Long, *mut Long, *mut Long, *mut Long, *mut Long, *mut Long, *mut Long) -> Long;
+
+/// One entry of the camera list from XSDK_Append (packed, 1025 bytes).
+#[repr(C, packed)]
+pub struct XSDK_CameraList {
+    pub str_product: [u8; 256],
+    pub str_serial_no: [u8; 256],
+    pub str_ip_address: [u8; 256],
+    pub str_framework: [u8; 256],
+    pub b_valid: u8,
+}
+pub type FnAppend = unsafe extern "C" fn(Long, *mut i8, *mut i8, *mut Long, *mut XSDK_CameraList) -> Long;
+
+/// Card status / capacity (X-T4: slot as input, then outputs).
+pub const API_CODE_GET_MEDIA_CAPACITY: Long = 0x4068;
+pub const API_CODE_GET_MEDIA_STATUS: Long = 0x4070;
+pub type FnGetPropIn1Out1 = unsafe extern "C" fn(XSDK_HANDLE, Long, Long, Long, *mut Long) -> Long;
+pub type FnGetPropIn1Out4 =
+    unsafe extern "C" fn(XSDK_HANDLE, Long, Long, Long, *mut Long, *mut Long, *mut Long, *mut Long) -> Long;
