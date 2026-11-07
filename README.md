@@ -235,11 +235,23 @@ own licenses. Command line: `cargo run --release -p recon -- <scan folder>
   Orbis tries USB first, then Wi-Fi. Photos arrive slower (≈45 MB RAW +
   JPEG each) and Wi-Fi drains the battery faster: JPEG only and a
   DC coupler (CP-W235) help. `cam --ip <address> info` tests it.
-- **Mode M on the camera itself:** shutter dial on a speed, aperture ring
-  on a value (neither on A). Orbis never sets the mode over USB: on the
-  X-T4 that makes the camera refuse every shot until it's switched off and
-  on. In P/A/S the camera picks aperture and/or shutter, so the app shows
-  those read-only.
+- **Dials, set once, then leave them:**
+
+  | Control | Position |
+  |---|---|
+  | ISO dial | **C** |
+  | Shutter speed dial | **T** (not B: bulb doesn't work tethered) |
+  | Exposure compensation dial | **C** |
+  | Aperture ring | **any value** (not A) |
+  | Focus mode lever (front) | **M** |
+  | Drive dial | **S** (single frame) |
+
+  That's mode M, and aperture, shutter and ISO are all set from the app
+  (tested: f/4 to f/22, 1/125 to 2 s, 36-photo scans). Orbis never sets
+  the mode itself. While the app controls the camera, the X-T4 ignores
+  its dials: after changing one, press **↻ dials** next to the mode. In
+  P/A/S the camera picks aperture and/or shutter, so the app shows those
+  read-only.
 - Everything else is set from the app. Best results: press
   ✨ Photogrammetry settings, pick aperture/shutter for your light, focus
   once (test shot with autofocus), then set Focus = MF and switch off
