@@ -643,6 +643,7 @@ impl Camera<'_> {
                 let err = anyhow!("{api} failed: {}", self.sdk.last_error(self.h));
                 // Never leave the shutter button half-pressed.
                 let (mut o, mut s) = (1, 0);
+                unsafe { (self.sdk.f.release)(self.h, XSDK_RELEASE_N_S1OFF, &mut o, &mut s) };
                 unsafe { (self.sdk.f.release)(self.h, XSDK_RELEASE_CANCEL, &mut o, &mut s) };
                 return Err(err);
             }
@@ -650,7 +651,12 @@ impl Camera<'_> {
         };
 
         if !autofocus {
-            release(XSDK_RELEASE_SHOOT_S1OFF, "XSDK_Release(SHOOT)")?;
+            // The SDK manual (XSDK_Release, "IMPORTANT NOTICE"): a full press
+            // needs a half-press before it, also in MF. The one-step
+            // SHOOT_S1OFF works for a while, then the X-T4 answers every
+            // release with SHOOT_ERROR. So: S1 (AF status ignored), then S2.
+            release(XSDK_RELEASE_S1ON, "XSDK_Release(S1)")?;
+            release(XSDK_RELEASE_S2_S1OFF, "XSDK_Release(S2 shoot)")?;
             return Ok(Shot { focus_ok: true });
         }
         // Autofocus can miss in dim light; try a few times before giving up.
