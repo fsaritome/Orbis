@@ -15,7 +15,10 @@ use fuji::{Choices, Setting, Values};
 
 pub enum CamCmd {
     /// Take one picture and save it as `<stem>.<ext>` (one file per format).
-    Capture { stem: PathBuf, autofocus: bool, reply: Sender<Result<Capture, String>> },
+    /// Answers [`CaptureMsg::Exposed`] as soon as the shutter has closed
+    /// (the table may turn), then [`CaptureMsg::Done`] once the files are
+    /// saved. On an early failure only `Done(Err)` comes.
+    Capture { stem: PathBuf, autofocus: bool, reply: Sender<CaptureMsg> },
     /// Change settings, in this order (e.g. mode before shutter speed).
     Set(Vec<(Setting, i32)>),
     /// Start or stop live view.
@@ -35,6 +38,12 @@ pub enum CamCmd {
     /// Stop live view and give control back to the camera; answers on
     /// the channel when done. Sent when the app closes.
     Shutdown(Sender<()>),
+}
+
+pub enum CaptureMsg {
+    /// The photo is in the camera's buffer; the transfer is still running.
+    Exposed,
+    Done(Result<Capture, String>),
 }
 
 /// What a capture produced.
@@ -80,6 +89,8 @@ const RETRY: Duration = Duration::from_secs(3);
 const REFRESH: Duration = Duration::from_secs(2);
 /// RAW + JPEG is ~45 MB: seconds over USB, much longer over Wi-Fi.
 const IMAGE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Longest exposure to wait for before moving on without `Exposed` (30 s + margin).
+const EXPOSE_TIMEOUT: Duration = Duration::from_secs(40);
 pub const PREVIEW_PX: u32 = 1280;
 pub const THUMB_PX: u32 = 200;
 
@@ -111,7 +122,7 @@ fn refuse_pending(cmds: &Receiver<CamCmd>, out: &Emitter, why: &str, wait: Durat
     while Instant::now() < until {
         match cmds.recv_timeout(Duration::from_millis(100)) {
             Ok(CamCmd::Capture { reply, .. }) => {
-                let _ = reply.send(Err(format!("camera not ready: {why}")));
+                let _ = reply.send(CaptureMsg::Done(Err(format!("camera not ready: {why}"))));
                 out.send(CamEvent::CaptureFailed);
             }
             Ok(CamCmd::Set(_)) => out.send(CamEvent::Log(format!("Camera: can't change settings: {why}"))),
@@ -309,7 +320,7 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter, conn: SharedCameraConn) {
                     if live {
                         let _ = cam.stop_live_view();
                     }
-                    let result = capture(&cam, &stem, autofocus, &out).map_err(|e| {
+                    let result = capture(&cam, &stem, autofocus, &out, &reply).map_err(|e| {
                         let mut msg = format!("{e:#}");
                         // The usual reason for a refused release.
                         if let Ok(Some(b)) = cam.battery() {
@@ -327,7 +338,7 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter, conn: SharedCameraConn) {
                         out.send(CamEvent::Log(format!("Camera: shot failed: {e}")));
                         out.send(CamEvent::CaptureFailed);
                     }
-                    let _ = reply.send(result);
+                    let _ = reply.send(CaptureMsg::Done(result));
                 }
                 Ok(CamCmd::Set(changes)) => {
                     // The camera refuses most changes while streaming:
@@ -427,7 +438,13 @@ fn send_settings(cam: &fuji::Camera<'_>, out: &Emitter, with_choices: bool) {
     out.send(CamEvent::Settings { values: cam.values(), choices: with_choices.then(|| cam.choices()) });
 }
 
-fn capture(cam: &fuji::Camera<'_>, stem: &Path, autofocus: bool, out: &Emitter) -> anyhow::Result<Capture> {
+fn capture(
+    cam: &fuji::Camera<'_>,
+    stem: &Path,
+    autofocus: bool,
+    out: &Emitter,
+    reply: &Sender<CaptureMsg>,
+) -> anyhow::Result<Capture> {
     if let Some(dir) = stem.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -435,6 +452,11 @@ fn capture(cam: &fuji::Camera<'_>, stem: &Path, autofocus: bool, out: &Emitter) 
     while cam.next_image()?.is_some() {}
 
     let shot = cam.shoot(autofocus)?;
+    // Let the turntable move on while the files are still transferring.
+    // If the buffer can't be read, the scan simply waits for the files.
+    if cam.wait_exposed(EXPOSE_TIMEOUT) {
+        let _ = reply.send(CaptureMsg::Exposed);
+    }
     let images = cam.wait_images(IMAGE_TIMEOUT)?;
     let mut files = Vec::new();
     let mut jpeg: Option<(PathBuf, Vec<u8>)> = None;

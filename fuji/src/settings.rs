@@ -12,11 +12,15 @@ pub enum Setting {
     WhiteBalance,
     Focus,
     Quality,
+    /// JPEG size (RAW is always full size).
+    ImageSize,
     FilmSimulation,
+    /// Image stabilization (body IBIS + lens OIS).
+    Stabilization,
 }
 
 impl Setting {
-    pub const ALL: [Setting; 8] = [
+    pub const ALL: [Setting; 10] = [
         Setting::Mode,
         Setting::Aperture,
         Setting::Shutter,
@@ -25,6 +29,9 @@ impl Setting {
         Setting::Focus,
         Setting::Quality,
         Setting::FilmSimulation,
+        // New settings go last: the app stores saved values by index here.
+        Setting::ImageSize,
+        Setting::Stabilization,
     ];
 
     pub fn label(self) -> &'static str {
@@ -36,7 +43,9 @@ impl Setting {
             Setting::WhiteBalance => "White balance",
             Setting::Focus => "Focus",
             Setting::Quality => "Image quality",
+            Setting::ImageSize => "Image size",
             Setting::FilmSimulation => "Film simulation",
+            Setting::Stabilization => "Stabilization",
         }
     }
 
@@ -79,7 +88,19 @@ impl Setting {
                 SDK_IMAGEQUALITY_RAW_SUPERFINE => "RAW + JPEG Super Fine".into(),
                 v => format!("{v}"),
             },
+            Setting::ImageSize => match v {
+                SDK_IMAGESIZE_L_3_2 => "L (26 MP)".into(),
+                SDK_IMAGESIZE_M_3_2 => "M (14 MP)".into(),
+                SDK_IMAGESIZE_S_3_2 => "S (6.5 MP)".into(),
+                v => format!("size {v}"),
+            },
             Setting::FilmSimulation => film_name(v).into(),
+            Setting::Stabilization => match v {
+                SDK_IS_MODE_CONTINUOUS => "Continuous".into(),
+                SDK_IS_MODE_SHOOT => "Shooting only".into(),
+                SDK_IS_MODE_OFF => "Off".into(),
+                v => format!("IS {v}"),
+            },
         }
     }
 }
@@ -142,6 +163,12 @@ pub const QUALITIES: [i32; 7] = [
     SDK_IMAGEQUALITY_RAW,
 ];
 
+/// JPEG sizes (3:2; no capability query on the X-T4).
+pub const IMAGE_SIZES: [i32; 3] = [SDK_IMAGESIZE_L_3_2, SDK_IMAGESIZE_M_3_2, SDK_IMAGESIZE_S_3_2];
+
+/// Stabilization modes (no capability query on the X-T4).
+pub const STABILIZATION: [i32; 3] = [SDK_IS_MODE_CONTINUOUS, SDK_IS_MODE_SHOOT, SDK_IS_MODE_OFF];
+
 /// Current value of every setting (`None` = couldn't be read).
 #[derive(Debug, Clone, Default)]
 pub struct Values(pub Vec<(Setting, Option<i32>)>);
@@ -170,6 +197,8 @@ pub fn photogrammetry_preset() -> Vec<(Setting, i32)> {
         (Setting::WhiteBalance, SDK_WB_DAYLIGHT),
         (Setting::FilmSimulation, SDK_FILMSIMULATION_PROVIA),
         (Setting::Quality, SDK_IMAGEQUALITY_RAW_FINE),
+        // On a tripod stabilization only adds blur and drains the battery.
+        (Setting::Stabilization, SDK_IS_MODE_OFF),
     ]
 }
 

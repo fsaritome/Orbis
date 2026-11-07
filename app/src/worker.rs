@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use rig::{Geometry, Rig};
 use serde::Serialize;
 
-use crate::camera::CamCmd;
+use crate::camera::{CamCmd, Capture, CaptureMsg};
 use crate::plan::ScanPlan;
 
 /// Where and how a real (non-dry) scan saves its photos.
@@ -114,6 +114,15 @@ struct ScanRun {
     shot: u32,
     phase: Phase,
     paused: bool,
+    /// The last photo: exposed, files still on their way.
+    pending: Option<Pending>,
+}
+
+struct Pending {
+    rx: Receiver<CaptureMsg>,
+    ring: u32,
+    index: u32,
+    angle: f64,
 }
 
 impl ScanRun {
@@ -299,6 +308,8 @@ impl Worker {
                 }
             }
             Cmd::Stop if scanning => {
+                // Keep the photo that is still transferring in scan.json.
+                self.collect_pending();
                 if let Some(mut s) = self.scan.take() {
                     if let Some(rec) = &mut s.record {
                         rec.finished = Some(format!("stopped {}", now()));
@@ -339,6 +350,7 @@ impl Worker {
             shot: 0,
             phase: Phase::Settle(Instant::now()),
             paused: false,
+            pending: None,
         };
         if let Err(e) = run.save_record() {
             self.log(format!("Can't write to the scan folder: {e:#}"));
@@ -406,56 +418,40 @@ impl Worker {
     }
 
     fn shoot(&mut self) {
+        // The previous photo must be fully saved before the next release
+        // (and a failed transfer sends the scan back to that position).
+        if !self.collect_pending() {
+            return;
+        }
         let s = self.scan.as_mut().expect("scanning");
         let (ring, index, angle) = (s.ring, s.shot, s.plan.angle_of(s.shot));
 
-        // Real scan: ask the camera thread for the photo and wait for it.
-        let mut files = Vec::new();
+        // Real scan: ask the camera thread for the photo. As soon as the
+        // shutter has closed, the table may turn; the files follow.
+        let mut done = None;
         if let Some(out) = &s.output {
             let stem = out.dir.join(format!("ring{}_{:03}", ring + 1, index + 1));
             let (tx, rx) = mpsc::channel();
-            let sent = self.camera.send(CamCmd::Capture { stem, autofocus: out.autofocus, reply: tx });
-            let result = match sent {
-                Ok(()) => rx.recv_timeout(CAPTURE_TIMEOUT).unwrap_or_else(|_| Err("camera did not answer".into())),
-                Err(_) => Err("camera thread is gone".into()),
+            let autofocus = out.autofocus;
+            let first = match self.camera.send(CamCmd::Capture { stem, autofocus, reply: tx }) {
+                Ok(()) => rx.recv_timeout(CAPTURE_TIMEOUT).unwrap_or(CaptureMsg::Done(Err("camera did not answer".into()))),
+                Err(_) => CaptureMsg::Done(Err("camera thread is gone".into())),
             };
-            match result {
-                Ok(capture) => {
-                    files = capture.files.clone();
-                    if let Some(rec) = &mut s.record {
-                        rec.shots.push(ShotRecord {
-                            ring,
-                            index,
-                            angle_deg: angle,
-                            files: capture
-                                .files
-                                .iter()
-                                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                                .collect(),
-                            time: now(),
-                            focus_ok: capture.focus_ok,
-                        });
-                    }
-                    if !capture.focus_ok {
-                        let msg = format!("ring {} photo {}: autofocus failed, check sharpness", ring + 1, index + 1);
-                        self.log(msg);
-                    }
+            match first {
+                CaptureMsg::Exposed => {
+                    let s = self.scan.as_mut().expect("scanning");
+                    s.pending = Some(Pending { rx, ring, index, angle });
                 }
-                Err(e) => {
-                    // Keep this position and wait for the user.
-                    s.paused = true;
-                    self.log(format!(
-                        "Photo ring {} / {} failed: {e}. Fix it, then press Resume to retry this position.",
-                        ring + 1,
-                        index + 1
-                    ));
-                    self.emit(Event::ScanPaused(true));
+                CaptureMsg::Done(Ok(capture)) => done = Some(capture),
+                CaptureMsg::Done(Err(e)) => {
+                    self.photo_failed(ring, index, &e);
                     return;
                 }
             }
         }
 
         let s = self.scan.as_mut().expect("scanning");
+        let waiting = s.pending.is_some();
         s.shot += 1;
         let mut next_ring = None;
         if s.shot == s.plan.shots_per_ring {
@@ -466,18 +462,27 @@ impl Worker {
         } else {
             s.phase = Phase::Move;
         }
-        let rings = s.plan.rings;
-        let finished = next_ring == Some(rings);
+        if let Some(capture) = done {
+            self.photo_saved(ring, index, angle, capture);
+        } else if !waiting {
+            // Dry run.
+            self.emit(Event::Shot { ring, index, angle, files: Vec::new() });
+        }
+        // End of a ring or scan: nothing to overlap, wait for the files.
+        if next_ring.is_some() && !self.collect_pending() {
+            return;
+        }
+
+        let s = self.scan.as_mut().expect("scanning");
+        let finished = next_ring == Some(s.plan.rings);
         if finished {
             if let Some(rec) = &mut s.record {
                 rec.finished = Some(now());
             }
+            if let Err(e) = s.save_record() {
+                self.log(format!("Couldn't update scan.json: {e:#}"));
+            }
         }
-        if let Err(e) = s.save_record() {
-            self.log(format!("Couldn't update scan.json: {e:#}"));
-        }
-        self.emit(Event::Shot { ring, index, angle, files });
-
         match next_ring {
             Some(_) if finished => {
                 let real = self.scan.take().is_some_and(|s| s.output.is_some());
@@ -487,6 +492,74 @@ impl Worker {
             Some(r) => self.emit(Event::WaitingForRing(r)),
             None => {}
         }
+    }
+
+    /// Wait for the files of the photo whose transfer is still running.
+    /// `false` if it failed: the scan is then paused at that position.
+    fn collect_pending(&mut self) -> bool {
+        let Some(p) = self.scan.as_mut().and_then(|s| s.pending.take()) else { return true };
+        let result = loop {
+            match p.rx.recv_timeout(CAPTURE_TIMEOUT) {
+                Ok(CaptureMsg::Exposed) => continue,
+                Ok(CaptureMsg::Done(r)) => break r,
+                Err(_) => break Err("the photo never arrived from the camera".into()),
+            }
+        };
+        match result {
+            Ok(capture) => {
+                self.photo_saved(p.ring, p.index, p.angle, capture);
+                true
+            }
+            Err(e) => {
+                // Back to that position: the table already moved on.
+                if let Some(s) = &mut self.scan {
+                    s.ring = p.ring;
+                    s.shot = p.index;
+                    s.phase = Phase::Move;
+                }
+                self.photo_failed(p.ring, p.index, &e);
+                false
+            }
+        }
+    }
+
+    fn photo_saved(&mut self, ring: u32, index: u32, angle: f64, capture: Capture) {
+        if let Some(s) = &mut self.scan {
+            if let Some(rec) = &mut s.record {
+                rec.shots.push(ShotRecord {
+                    ring,
+                    index,
+                    angle_deg: angle,
+                    files: capture
+                        .files
+                        .iter()
+                        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                        .collect(),
+                    time: now(),
+                    focus_ok: capture.focus_ok,
+                });
+            }
+            if let Err(e) = s.save_record() {
+                self.log(format!("Couldn't update scan.json: {e:#}"));
+            }
+        }
+        if !capture.focus_ok {
+            self.log(format!("ring {} photo {}: autofocus failed, check sharpness", ring + 1, index + 1));
+        }
+        self.emit(Event::Shot { ring, index, angle, files: capture.files });
+    }
+
+    /// Keep this position and wait for the user (Resume retries it).
+    fn photo_failed(&mut self, ring: u32, index: u32, e: &str) {
+        if let Some(s) = &mut self.scan {
+            s.paused = true;
+        }
+        self.log(format!(
+            "Photo ring {} / {} failed: {e}. Fix it, then press Resume to retry this position.",
+            ring + 1,
+            index + 1
+        ));
+        self.emit(Event::ScanPaused(true));
     }
 }
 

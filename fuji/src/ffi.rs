@@ -182,6 +182,17 @@ pub const API_CODE_GET_IMAGE_QUALITY: Long = 0x2130;
 pub const API_CODE_SET_FOCUS_MODE: Long = 0x2201;
 pub const API_CODE_GET_FOCUS_MODE: Long = 0x2202;
 pub const API_CODE_CAP_FOCUS_MODE: Long = 0x2209;
+pub const API_CODE_SET_IMAGE_SIZE: Long = 0x2101;
+pub const API_CODE_GET_IMAGE_SIZE: Long = 0x2102;
+pub const API_CODE_SET_IS_MODE: Long = 0x2227;
+pub const API_CODE_GET_IS_MODE: Long = 0x2228;
+
+pub const SDK_IMAGESIZE_S_3_2: Long = 1;
+pub const SDK_IMAGESIZE_M_3_2: Long = 4;
+pub const SDK_IMAGESIZE_L_3_2: Long = 7;
+pub const SDK_IS_MODE_CONTINUOUS: Long = 1;
+pub const SDK_IS_MODE_SHOOT: Long = 2;
+pub const SDK_IS_MODE_OFF: Long = 3;
 
 pub const SDK_FOCUS_MANUAL: Long = 0x0001;
 pub const SDK_FOCUS_AFS: Long = 0x8001;

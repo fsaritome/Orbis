@@ -834,6 +834,23 @@ impl Camera<'_> {
         Ok(status != XSDK_RELEASE_AF_FAILURE)
     }
 
+    /// Wait until the last photo is in the camera's buffer, i.e. the
+    /// exposure is over and the camera may move (the SDK manual's way to
+    /// see a release complete). `false` if that couldn't be seen within
+    /// `timeout`; the images then still arrive as usual.
+    pub fn wait_exposed(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            match self.buffered() {
+                Ok(n) if n > 0 => return true,
+                Ok(_) => sleep(Duration::from_millis(20)),
+                Err(_) if self.last_busy() => sleep(Duration::from_millis(20)),
+                Err(_) => return false,
+            }
+        }
+        false
+    }
+
     /// Wait until the camera has delivered at least one image, then return
     /// everything in the buffer (RAW+JPEG arrives as two images).
     pub fn wait_images(&self, timeout: Duration) -> Result<Vec<Image>> {
@@ -983,6 +1000,8 @@ impl Camera<'_> {
             Setting::Focus => self.get_prop(API_CODE_GET_FOCUS_MODE),
             Setting::Quality => self.get_prop(API_CODE_GET_IMAGE_QUALITY),
             Setting::FilmSimulation => self.get_prop(API_CODE_GET_FILM_SIMULATION),
+            Setting::ImageSize => self.get_prop(API_CODE_GET_IMAGE_SIZE),
+            Setting::Stabilization => self.get_prop(API_CODE_GET_IS_MODE),
         }
     }
 
@@ -1026,6 +1045,8 @@ impl Camera<'_> {
                 Setting::FilmSimulation => {
                     ("SetFilmSimulationMode", (f.set_prop)(h, API_CODE_SET_FILM_SIMULATION, 1, v))
                 }
+                Setting::ImageSize => ("SetImageSize", (f.set_prop)(h, API_CODE_SET_IMAGE_SIZE, 1, v)),
+                Setting::Stabilization => ("SetISMode", (f.set_prop)(h, API_CODE_SET_IS_MODE, 1, v)),
             }
         };
         self.call(api, ret).with_context(|| format!("setting {} to {}", s.label(), s.value_name(v)))
@@ -1057,6 +1078,8 @@ impl Camera<'_> {
         );
         add(Setting::Quality, Ok(settings::QUALITIES.to_vec()));
         add(Setting::FilmSimulation, Ok(settings::FILM_SIMULATIONS.to_vec()));
+        add(Setting::ImageSize, Ok(settings::IMAGE_SIZES.to_vec()));
+        add(Setting::Stabilization, Ok(settings::STABILIZATION.to_vec()));
         Choices(out)
     }
 
