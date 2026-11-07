@@ -100,15 +100,19 @@ Release etc.) without the user's OK.
 
 ## Camera troubleshooting (learned the hard way)
 
-- **SHOOT_ERROR on every release while the battery is fine = the exposure
-  mode was set over the SDK.** On the X-T4 `SetAEMode` makes the camera
-  refuse all releases (even in later sessions) until it's switched off and
-  on. Orbis never sets the mode; it comes from the dials. Found with
-  `cam shoot --probe presetN` (one setting per run).
-- **SHOOT_ERROR after ~30 good photos, then on every release = release
-  without half-press.** The SDK manual (XSDK_Release, "IMPORTANT NOTICE")
-  requires S1 before S2, also in MF; `SHOOT_S1OFF` alone breaks after a
-  while. `shoot()` always does S1ON → S2_S1OFF.
+- **SHOOT_ERROR (then stuck until power-cycled) whenever the lens is
+  stopped down = full press too soon after the half-press.** Wide open
+  (f/4) S1 → S2 back to back works; at f/4.5, f/8 the X-T4 aborts. The
+  camera's own button works at f/8. Fix: `S1_TO_S2` = 500 ms pause, and
+  BUSY retries on every release (like Fujifilm's ReleaseButton sample,
+  where S2 comes when the user presses through). Found 2026-11-07 by
+  bisecting with `cam shoot --no-af` and `cam set` / `--probe m8`. This was
+  probably also behind the older "SetAEMode blocks the shutter" finding
+  (setting M changed the aperture); Orbis still never sets the mode.
+- **Release always S1ON → S2_S1OFF**, also in MF: the SDK manual
+  (XSDK_Release, "IMPORTANT NOTICE") requires the half-press first.
+- **A stuck camera answers BUSY to `SetPriorityMode` for a while after
+  power-on**: wait a few seconds and connect again.
 - **Dials for M on the X-T4: ISO C, shutter T, exposure comp C, aperture
   ring off A.** Not B (bulb). While Orbis holds PC priority the camera
   ignores dial changes: the "↻ dials" button (camera reconnect) reads them.

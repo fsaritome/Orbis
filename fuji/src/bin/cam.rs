@@ -39,6 +39,11 @@ enum Cmd {
     },
     /// Every setting with its current value and the values it accepts.
     Settings,
+    /// Set one setting to a raw value (see `settings`), e.g. `set Aperture 800`.
+    Set {
+        setting: String,
+        value: i32,
+    },
     /// Show the focus point and the range the camera accepts; optionally
     /// move it (`--h --v --size`).
     FocusArea {
@@ -171,6 +176,18 @@ fn main() -> Result<()> {
                             }
                         }
                     }
+                    if p == "m8" {
+                        // M and f/8 from the PC, in this session (dials T, ring A).
+                        for (st, v) in [(fuji::Setting::Mode, 1), (fuji::Setting::Aperture, 800)] {
+                            match cam.set(st, v) {
+                                Ok(()) => println!("    set {} = {}", st.label(), st.value_name(v)),
+                                Err(e) => println!("    set {}: {e:#}", st.label()),
+                            }
+                        }
+                        for st in [fuji::Setting::Mode, fuji::Setting::Aperture, fuji::Setting::Shutter] {
+                            println!("    {} is {}", st.label(), cam.get(st).map(|v| st.value_name(v)).unwrap_or_default());
+                        }
+                    }
                     if p == "mf" {
                         if let Err(e) = cam.set(fuji::Setting::Focus, fuji::ffi::SDK_FOCUS_MANUAL) {
                             println!("    set focus: {e:#}");
@@ -200,6 +217,14 @@ fn main() -> Result<()> {
                 }
                 println!("    release {:.2} s, total {:.2} s", fired.as_secs_f64(), t.elapsed().as_secs_f64());
             }
+        }
+        Cmd::Set { setting, value } => {
+            let s = fuji::Setting::ALL
+                .into_iter()
+                .find(|s| s.label().eq_ignore_ascii_case(&setting))
+                .with_context(|| format!("unknown setting {setting}"))?;
+            cam.set(s, value)?;
+            println!("{} = {}", s.label(), cam.get(s).map(|v| s.value_name(v)).unwrap_or_else(|e| format!("{e:#}")));
         }
         Cmd::Settings => {
             let values = cam.values();

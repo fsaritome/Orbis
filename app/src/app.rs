@@ -474,7 +474,15 @@ impl OrbisApp {
                         }
                     }
                     self.cam_values = Some(values);
-                    if let Some(c) = choices {
+                    if let Some(mut c) = choices {
+                        // A list the camera didn't answer this time (busy)
+                        // keeps its last known values instead of vanishing.
+                        for (s, old) in std::mem::take(&mut self.cam_choices.0) {
+                            if c.get(s).is_empty() {
+                                c.0.retain(|(k, _)| *k != s);
+                                c.0.push((s, old));
+                            }
+                        }
                         self.cam_choices = c;
                     }
                 }

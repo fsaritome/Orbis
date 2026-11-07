@@ -37,6 +37,8 @@ use ffi::*;
 const DLL: &str = "XAPI.dll";
 /// Half-press attempts before shooting without focus lock.
 const AF_ATTEMPTS: u32 = 3;
+/// Pause between half-press and full press (see `shoot_once`).
+const S1_TO_S2: Duration = Duration::from_millis(500);
 
 /// Locate the folder holding `XAPI.dll`.
 pub fn find_sdk_dir() -> Result<PathBuf> {
@@ -638,7 +640,15 @@ impl Camera<'_> {
         // is the number of frames and must be 1.
         let release = |mode: Long, api: &str| -> Result<Long> {
             let (mut shot_opt, mut status) = (1, XSDK_RELEASE_OK);
-            let ret = unsafe { (self.sdk.f.release)(self.h, mode, &mut shot_opt, &mut status) };
+            let mut ret = unsafe { (self.sdk.f.release)(self.h, mode, &mut shot_opt, &mut status) };
+            // Busy (e.g. still stopping down after S1): the sample retries.
+            let mut tries = 0;
+            while ret != XSDK_COMPLETE && self.last_busy() && tries < 30 {
+                tries += 1;
+                sleep(Duration::from_millis(100));
+                (shot_opt, status) = (1, XSDK_RELEASE_OK);
+                ret = unsafe { (self.sdk.f.release)(self.h, mode, &mut shot_opt, &mut status) };
+            }
             if ret != XSDK_COMPLETE {
                 let err = anyhow!("{api} failed: {}", self.sdk.last_error(self.h));
                 // Never leave the shutter button half-pressed.
@@ -656,6 +666,10 @@ impl Camera<'_> {
             // SHOOT_S1OFF works for a while, then the X-T4 answers every
             // release with SHOOT_ERROR. So: S1 (AF status ignored), then S2.
             release(XSDK_RELEASE_S1ON, "XSDK_Release(S1)")?;
+            // S2 right after S1 failed whenever the lens was stopped down
+            // (f/4.5, f/8: SHOOT_ERROR, then stuck); wide open it worked. In
+            // Fujifilm's sample S2 comes later, when the user presses through.
+            sleep(S1_TO_S2);
             release(XSDK_RELEASE_S2_S1OFF, "XSDK_Release(S2 shoot)")?;
             return Ok(Shot { focus_ok: true });
         }
@@ -683,6 +697,7 @@ impl Camera<'_> {
                  or focus once, set the camera to MF and switch off \"Autofocus before every photo\""
             );
         }
+        sleep(S1_TO_S2);
         release(XSDK_RELEASE_S2_S1OFF, "XSDK_Release(S2 shoot)")?;
         Ok(Shot { focus_ok })
     }
@@ -852,6 +867,17 @@ impl Camera<'_> {
 
     /// Two-pass list query: count first, then the values.
     fn list(&self, api: &str, mut f: impl FnMut(*mut Long, *mut Long) -> Long) -> Result<Vec<i32>> {
+        // Busy now and then (seen: aperture list empty for one refresh).
+        for _ in 0..10 {
+            match self.list_once(api, &mut f) {
+                Err(_) if self.last_busy() => sleep(Duration::from_millis(100)),
+                r => return r,
+            }
+        }
+        self.list_once(api, &mut f)
+    }
+
+    fn list_once(&self, api: &str, f: &mut impl FnMut(*mut Long, *mut Long) -> Long) -> Result<Vec<i32>> {
         let mut n: Long = 0;
         self.call(api, f(&mut n, ptr::null_mut()))?;
         if n <= 0 {
