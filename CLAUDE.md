@@ -105,6 +105,14 @@ Release etc.) without the user's OK.
   refuse all releases (even in later sessions) until it's switched off and
   on. Orbis never sets the mode; it comes from the dials. Found with
   `cam shoot --probe presetN` (one setting per run).
+- **SHOOT_ERROR after ~30 good photos, then on every release = release
+  without half-press.** The SDK manual (XSDK_Release, "IMPORTANT NOTICE")
+  requires S1 before S2, also in MF; `SHOOT_S1OFF` alone breaks after a
+  while. `shoot()` always does S1ON → S2_S1OFF.
+- **Dials for M on the X-T4: ISO C, shutter T, exposure comp C, aperture
+  ring off A.** Not B (bulb). While Orbis holds PC priority the camera
+  ignores dial changes: the "↻ dials" button (camera reconnect) reads them.
+- **BUSY right after connecting** is normal: `Camera::set` retries ~3 s.
 - **SHOOT_ERROR on every release + the camera switching itself off = low
   battery.** Check `battery_percent` in `/status` (or `GET /camera/diag`,
   `cam diag`) before debugging anything else.

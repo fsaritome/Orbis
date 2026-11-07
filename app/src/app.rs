@@ -769,10 +769,24 @@ impl OrbisApp {
                         if s == Setting::Mode {
                             // Read-only: the X-T4 takes the mode from its dials,
                             // and setting it via USB blocks the shutter.
-                            ui.strong(text).on_hover_text(
-                                "Set on the camera: M = shutter dial on a speed and aperture ring on a value (neither on A).\n\
-                                 Orbis doesn't change the mode: the X-T4 then refuses to shoot until it's switched off and on.",
-                            );
+                            ui.horizontal(|ui| {
+                                ui.strong(text).on_hover_text(
+                                    "Set on the camera: M = shutter dial on T (or a speed) and aperture ring on a value (neither on A).\n\
+                                     Orbis doesn't change the mode: the X-T4 then refuses to shoot until it's switched off and on.",
+                                );
+                                // While Orbis is in control (PC priority) the X-T4
+                                // ignores its dials; a reconnect reads them again.
+                                if ui
+                                    .add_enabled(self.scan.is_none(), egui::Button::new("↻ dials").small())
+                                    .on_hover_text(
+                                        "Changed a dial or the aperture ring? While Orbis controls the camera, the X-T4 \
+                                         ignores them. This reconnects the camera so it reads them again.",
+                                    )
+                                    .clicked()
+                                {
+                                    let _ = self.cam_cmd.send(CamCmd::Reconnect);
+                                }
+                            });
                         } else if let Some(why) = locked_by_mode(s, values.get(Setting::Mode)) {
                             ui.strong(text).on_hover_text(why);
                         } else if choices.is_empty() || !editable {
