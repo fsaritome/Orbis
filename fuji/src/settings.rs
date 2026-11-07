@@ -196,7 +196,9 @@ pub fn photogrammetry_preset() -> Vec<(Setting, i32)> {
         (Setting::Iso, 160),
         (Setting::WhiteBalance, SDK_WB_DAYLIGHT),
         (Setting::FilmSimulation, SDK_FILMSIMULATION_PROVIA),
-        (Setting::Quality, SDK_IMAGEQUALITY_RAW_FINE),
+        // The 3D pipeline reads JPEGs; RAW would triple every transfer.
+        (Setting::Quality, SDK_IMAGEQUALITY_FINE),
+        (Setting::ImageSize, SDK_IMAGESIZE_L_3_2),
         // On a tripod stabilization only adds blur and drains the battery.
         (Setting::Stabilization, SDK_IS_MODE_OFF),
     ]

@@ -127,7 +127,7 @@ cargo run --release -p orbis
   image quality and film simulation from the app; value lists come from the
   camera itself. The **mode** follows the camera's dials and is shown
   read-only (see Camera setup). **✨ Photogrammetry settings** sets ISO
-  160, daylight WB, Provia, RAW + JPEG Fine in one click; tips
+  160, daylight WB, Provia, JPEG Fine (L), stabilization off in one click; tips
   flag anything that would make photos inconsistent. Your choices are
   re-applied on every connect (the X-T4 returns to its dials when the app
   lets go). Autofocus toggle and test shot. Connects over USB or Wi-Fi.
@@ -179,7 +179,8 @@ only) for scripts: status, log, scan settings and start/stop, camera
 settings, turntable moves, 3D model builds, UI zoom and window
 screenshots. Each request needs the header `X-Orbis: 1`. Browsers can't
 send that cross-site, so web pages can't drive the rig. `GET /` lists every
-endpoint.
+endpoint; **[docs/api.md](docs/api.md)** documents all of them with
+examples in curl, PowerShell and Python.
 
 ```powershell
 curl.exe -s -H "X-Orbis: 1" http://127.0.0.1:7880/status

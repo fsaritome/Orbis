@@ -445,6 +445,10 @@ impl OrbisApp {
             "preview": self.preview.as_ref().map(|(_, p)| p),
             "model": self.model.status(&self.saved.model),
             "zoom": ctx.zoom_factor(),
+            "transfer": {
+                "progress": self.transfer.progress(),
+                "label": self.transfer.label(),
+            },
         })
     }
 }

@@ -82,7 +82,23 @@ pub enum CamEvent {
     FocusPoint([f32; 4]),
     /// Body battery in percent (None = mains power or unknown).
     Battery(Option<u8>),
+    /// Progress of a photo's way from the camera to the PC.
+    Transfer(Transfer),
     Log(String),
+}
+
+/// Steps of one photo transfer. The SDK reads each image in one call, so
+/// progress within an image is estimated from the measured speed.
+#[derive(Debug, Clone, Copy)]
+pub enum Transfer {
+    /// Shutter closed, photo in the camera's buffer.
+    Exposed,
+    /// Reading one image (RAW or JPEG) of `bytes` starts.
+    Image { bytes: usize },
+    /// That image arrived after `secs`.
+    ImageDone { bytes: usize, secs: f32 },
+    /// All images are saved (or the capture failed: `ok` = false).
+    Done { ok: bool },
 }
 
 const RETRY: Duration = Duration::from_secs(3);
@@ -334,6 +350,7 @@ fn run(cmds: Receiver<CamCmd>, out: Emitter, conn: SharedCameraConn) {
                         live = false;
                         out.send(CamEvent::Live(false));
                     }
+                    out.send(CamEvent::Transfer(Transfer::Done { ok: result.is_ok() }));
                     if let Err(e) = &result {
                         out.send(CamEvent::Log(format!("Camera: shot failed: {e}")));
                         out.send(CamEvent::CaptureFailed);
@@ -457,7 +474,12 @@ fn capture(
     if cam.wait_exposed(EXPOSE_TIMEOUT) {
         let _ = reply.send(CaptureMsg::Exposed);
     }
-    let images = cam.wait_images(IMAGE_TIMEOUT)?;
+    out.send(CamEvent::Transfer(Transfer::Exposed));
+    let images = cam.wait_images_with(
+        IMAGE_TIMEOUT,
+        &mut |bytes| out.send(CamEvent::Transfer(Transfer::Image { bytes })),
+        &mut |bytes, t| out.send(CamEvent::Transfer(Transfer::ImageDone { bytes, secs: t.as_secs_f32() })),
+    )?;
     let mut files = Vec::new();
     let mut jpeg: Option<(PathBuf, Vec<u8>)> = None;
     for img in images {

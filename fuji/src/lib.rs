@@ -705,6 +705,12 @@ impl Camera<'_> {
     /// Read the head of the transfer queue: a photo, a live view frame, or
     /// nothing.
     fn read_next(&self) -> Result<Option<Image>> {
+        self.read_next_with(&mut |_| {})
+    }
+
+    /// Like [`Camera::read_next`]; `on_start(bytes)` runs just before a
+    /// photo (not a live frame) is read, which is the slow part.
+    fn read_next_with(&self, on_start: &mut dyn FnMut(usize)) -> Result<Option<Image>> {
         let mut info: XSDK_ImageInformation = unsafe { std::mem::zeroed() };
         info.lFormat = XSDK_IMAGEFORMAT_NONE;
         let ret = unsafe { (self.sdk.f.read_image_info)(self.h, &mut info) };
@@ -720,6 +726,9 @@ impl Camera<'_> {
         );
         if !known || size <= 0 {
             return Ok(None);
+        }
+        if format & 0xFF != XSDK_IMAGEFORMAT_LIVE {
+            on_start(size as usize);
         }
         let mut data = vec![0u8; size as usize];
         self.call("XSDK_ReadImage", unsafe { (self.sdk.f.read_image)(self.h, data.as_mut_ptr(), size as u32) })?;
@@ -854,21 +863,48 @@ impl Camera<'_> {
     /// Wait until the camera has delivered at least one image, then return
     /// everything in the buffer (RAW+JPEG arrives as two images).
     pub fn wait_images(&self, timeout: Duration) -> Result<Vec<Image>> {
+        self.wait_images_with(timeout, &mut |_| {}, &mut |_, _| {})
+    }
+
+    /// [`Camera::wait_images`] with progress: `on_start(bytes)` before each
+    /// image is read, `on_done(bytes, how_long)` after it.
+    pub fn wait_images_with(
+        &self,
+        timeout: Duration,
+        on_start: &mut dyn FnMut(usize),
+        on_done: &mut dyn FnMut(usize, Duration),
+    ) -> Result<Vec<Image>> {
         let deadline = Instant::now() + timeout;
         let mut out = Vec::new();
+        let mut next = |out: &mut Vec<Image>| -> Result<bool> {
+            let mut t0 = None;
+            loop {
+                match self.read_next_with(&mut |n| {
+                    on_start(n);
+                    t0 = Some(Instant::now());
+                })? {
+                    Some(img) if img.is_live() => continue,
+                    Some(img) => {
+                        on_done(img.data.len(), t0.map_or(Duration::ZERO, |t| t.elapsed()));
+                        out.push(img);
+                        return Ok(true);
+                    }
+                    None => return Ok(false),
+                }
+            }
+        };
         loop {
-            match self.next_image()? {
-                Some(img) => out.push(img),
-                None if !out.is_empty() => {
+            match next(&mut out)? {
+                true => {}
+                false if !out.is_empty() => {
                     // Give a second file (RAW+JPEG) a moment to arrive.
                     sleep(Duration::from_millis(300));
-                    match self.next_image()? {
-                        Some(img) => out.push(img),
-                        None => return Ok(out),
+                    if !next(&mut out)? {
+                        return Ok(out);
                     }
                 }
-                None if Instant::now() >= deadline => bail!("no image arrived within {timeout:?}"),
-                None => sleep(Duration::from_millis(100)),
+                false if Instant::now() >= deadline => bail!("no image arrived within {timeout:?}"),
+                false => sleep(Duration::from_millis(100)),
             }
         }
     }

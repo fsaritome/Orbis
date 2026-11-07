@@ -8,6 +8,7 @@ mod app;
 mod camera;
 mod model;
 mod plan;
+mod transfer;
 mod wheel;
 mod worker;
 

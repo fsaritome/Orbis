@@ -15,6 +15,10 @@ pub struct WheelState<'a> {
     pub table_degrees: Option<f64>,
     pub center_title: String,
     pub center_sub: String,
+    /// Photo transfer camera → PC, 0..1 (None = idle).
+    pub transfer: Option<f32>,
+    /// Speed / result under the center text.
+    pub transfer_label: Option<String>,
 }
 
 /// Screen point at `deg` (0° = top, clockwise) and `radius` around `c`.
@@ -75,8 +79,23 @@ pub fn show(ui: &mut Ui, size: f32, w: &WheelState) {
     }
 
     // Center label.
-    painter.circle_filled(c, outer * 0.28, v.extreme_bg_color);
-    painter.circle_stroke(c, outer * 0.28, Stroke::new(1.0, v.widgets.noninteractive.bg_stroke.color));
+    let hub = outer * 0.28;
+    painter.circle_filled(c, hub, v.extreme_bg_color);
+    painter.circle_stroke(c, hub, Stroke::new(1.0, v.widgets.noninteractive.bg_stroke.color));
+
+    // Transfer ring around the hub: fills clockwise from the top.
+    if let Some(p) = w.transfer {
+        let r = hub + 7.0;
+        let width = (size * 0.012).clamp(3.0, 6.0);
+        painter.circle_stroke(c, r, Stroke::new(width, faint));
+        let green = Color32::from_rgb(0x3D, 0xC2, 0x6B);
+        let color = if p >= 1.0 { green } else { accent };
+        let steps = ((96.0 * p).ceil() as usize).max(2);
+        let pts: Vec<Pos2> = (0..=steps).map(|i| polar(c, r, 360.0 * p as f64 * i as f64 / steps as f64)).collect();
+        if p > 0.0 {
+            painter.add(Shape::line(pts, Stroke::new(width, color)));
+        }
+    }
     painter.text(
         c - Vec2::new(0.0, size * 0.025),
         egui::Align2::CENTER_CENTER,
@@ -91,4 +110,13 @@ pub fn show(ui: &mut Ui, size: f32, w: &WheelState) {
         egui::FontId::proportional((size * 0.032).clamp(10.0, 16.0)),
         v.weak_text_color(),
     );
+    if let Some(label) = &w.transfer_label {
+        painter.text(
+            c + Vec2::new(0.0, size * 0.078),
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional((size * 0.024).clamp(9.0, 13.0)),
+            v.weak_text_color(),
+        );
+    }
 }

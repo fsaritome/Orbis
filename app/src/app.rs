@@ -191,6 +191,8 @@ pub struct OrbisApp {
     conn_ui: connections::ConnUi,
     /// Camera battery in percent.
     cam_battery: Option<u8>,
+    /// Photo transfer camera → PC, drawn as a ring in the wheel.
+    transfer: crate::transfer::TransferMeter,
     /// Re-apply the saved camera settings when the first values arrive.
     restore_pending: bool,
     cam_choices: Choices,
@@ -255,6 +257,7 @@ impl OrbisApp {
             cam_conn,
             conn_ui: Default::default(),
             cam_battery: None,
+            transfer: Default::default(),
             restore_pending: false,
             cam_choices: Choices::default(),
             zeroed: false,
@@ -465,6 +468,7 @@ impl OrbisApp {
                     self.cam_values = None;
                 }
                 CamEvent::Battery(b) => self.cam_battery = b,
+                CamEvent::Transfer(t) => self.transfer.on(t),
                 CamEvent::Settings { values, choices } => {
                     if std::mem::take(&mut self.restore_pending) {
                         let restore = self.saved.camera_settings(values.get(Setting::Mode));
@@ -840,7 +844,7 @@ impl OrbisApp {
                     tips.push("Black & white film simulation: textures will have no colour.");
                 }
                 if values.get(Setting::Quality) == Some(fuji::ffi::SDK_IMAGEQUALITY_RAW) {
-                    tips.push("RAW only gives no preview: choose RAW + JPEG.");
+                    tips.push("RAW only: no preview, and the 3D model needs JPEGs. Choose JPEG Fine.");
                 }
                 if values.get(Setting::Focus) == Some(fuji::ffi::SDK_FOCUS_AFC) {
                     tips.push("AF-C refocuses constantly: use AF-S, or focus once and switch to MF.");
@@ -851,7 +855,8 @@ impl OrbisApp {
                 if ui
                     .add_enabled(editable, egui::Button::new("✨ Photogrammetry settings"))
                     .on_hover_text(
-                        "ISO 160, daylight white balance, Provia colours, RAW + JPEG Fine.\n\
+                        "ISO 160, daylight white balance, Provia colours, JPEG Fine at full size (L),\n\
+                         stabilization off. Add RAW under Image quality only if you develop RAWs yourself.\n\
                          Mode, aperture and shutter stay as they are: set M on the camera's dials for your light.",
                     )
                     .clicked()
@@ -1000,6 +1005,8 @@ impl OrbisApp {
                     table_degrees: self.table_deg.map(|d| d - origin),
                     center_title: title,
                     center_sub: sub,
+                    transfer: self.transfer.progress(),
+                    transfer_label: self.transfer.label(),
                 },
             );
             ui.add_space(12.0);
@@ -1290,8 +1297,13 @@ impl eframe::App for OrbisApp {
 
         self.ring_dialog(&ctx);
         self.connections_window(&ctx);
-        // Keep the elapsed timer and status fresh.
-        ctx.request_repaint_after(Duration::from_millis(250));
+        // Keep the elapsed timer and status fresh; smooth while a photo
+        // transfer ring is filling.
+        if self.transfer.animating() {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
