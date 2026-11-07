@@ -105,25 +105,28 @@ impl Saved {
     }
 
     fn remember_camera(&mut self, changes: &[(Setting, i32)]) {
-        for &(s, v) in changes {
+        // The mode comes from the camera's dials; never stored or restored.
+        for &(s, v) in changes.iter().filter(|(s, _)| *s != Setting::Mode) {
             let idx = Setting::ALL.iter().position(|&x| x == s).expect("in ALL");
             self.camera.retain(|(i, _)| *i != idx);
             self.camera.push((idx, v));
         }
     }
 
-    /// Remembered settings in a safe order: mode first (shutter speeds
-    /// depend on it), then the rest in `Setting::ALL` order.
-    fn camera_settings(&self) -> Vec<(Setting, i32)> {
+    /// Remembered settings to re-apply, given the camera's current mode
+    /// (from its dials). Never the mode itself: on the X-T4, setting the
+    /// exposure mode through the SDK makes the camera refuse every release
+    /// until it's switched off and on.
+    fn camera_settings(&self, mode: Option<i32>) -> Vec<(Setting, i32)> {
         let mut v: Vec<(usize, i32)> = self.camera.iter().copied().filter(|(i, _)| *i < Setting::ALL.len()).collect();
         v.sort_by_key(|(i, _)| *i);
-        let all: Vec<(Setting, i32)> = v.into_iter().map(|(i, val)| (Setting::ALL[i], val)).collect();
-        // Only restore what the mode lets you set: in A the camera picks the
-        // shutter, in S the aperture, in P both (the camera refuses otherwise).
+        // Only what the mode lets you set: in A the camera picks the shutter,
+        // in S the aperture, in P both (the camera refuses otherwise).
         use fuji::ffi::{XSDK_AE_APERTURE_PRIORITY as A, XSDK_AE_PROGRAM as P, XSDK_AE_SHUTTER_PRIORITY as S};
-        let mode = all.iter().find(|(s, _)| *s == Setting::Mode).map(|&(_, m)| m);
-        all.into_iter()
+        v.into_iter()
+            .map(|(i, val)| (Setting::ALL[i], val))
             .filter(|(s, _)| match (s, mode) {
+                (Setting::Mode, _) => false,
                 (Setting::Shutter, Some(A | P)) => false,
                 (Setting::Aperture, Some(S | P)) => false,
                 _ => true,
@@ -188,6 +191,8 @@ pub struct OrbisApp {
     conn_ui: connections::ConnUi,
     /// Camera battery in percent.
     cam_battery: Option<u8>,
+    /// Re-apply the saved camera settings when the first values arrive.
+    restore_pending: bool,
     cam_choices: Choices,
     /// The turntable has no home sensor: its position is zeroed once per
     /// session on the first connect, so angles start at 0°.
@@ -227,6 +232,8 @@ impl OrbisApp {
         let saved_root = saved.scans_root.clone();
         setup_fonts(&cc.egui_ctx, saved.zoom);
         let mut saved = saved;
+        let mode_idx = Setting::ALL.iter().position(|&s| s == Setting::Mode);
+        saved.camera.retain(|(i, _)| Some(*i) != mode_idx);
         if saved.camera_conn.ip.is_empty() && !saved.camera_ip.trim().is_empty() {
             saved.camera_conn.ip = std::mem::take(&mut saved.camera_ip).trim().to_owned();
         }
@@ -248,6 +255,7 @@ impl OrbisApp {
             cam_conn,
             conn_ui: Default::default(),
             cam_battery: None,
+            restore_pending: false,
             cam_choices: Choices::default(),
             zeroed: false,
             table_deg: None,
@@ -449,11 +457,8 @@ impl OrbisApp {
                 }
                 CamEvent::Connected(info) => {
                     self.cam = CamState::Connected(info);
-                    let restore = self.saved.camera_settings();
-                    if !restore.is_empty() {
-                        self.push_log(format!("Restoring {} camera settings", restore.len()));
-                        let _ = self.cam_cmd.send(CamCmd::Set(restore));
-                    }
+                    // Restore once the first values (and so the mode) are in.
+                    self.restore_pending = true;
                 }
                 CamEvent::Problem(why) => {
                     self.cam = CamState::Problem(why);
@@ -461,12 +466,26 @@ impl OrbisApp {
                 }
                 CamEvent::Battery(b) => self.cam_battery = b,
                 CamEvent::Settings { values, choices } => {
+                    if std::mem::take(&mut self.restore_pending) {
+                        let restore = self.saved.camera_settings(values.get(Setting::Mode));
+                        if !restore.is_empty() {
+                            self.push_log(format!("Restoring {} camera settings", restore.len()));
+                            let _ = self.cam_cmd.send(CamCmd::Set(restore));
+                        }
+                    }
                     self.cam_values = Some(values);
                     if let Some(c) = choices {
                         self.cam_choices = c;
                     }
                 }
                 CamEvent::Photo { path, preview, thumb } => {
+                    if self.test_shot_busy {
+                        let mb = std::fs::metadata(&path).map(|m| m.len() as f64 / 1e6).unwrap_or(0.0);
+                        self.push_log(format!(
+                            "Test shot saved: {} ({mb:.1} MB)",
+                            path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+                        ));
+                    }
                     self.test_shot_busy = false;
                     if let Some(img) = preview {
                         let tex = ctx.load_texture("preview", img, TextureOptions::LINEAR);
@@ -742,7 +761,16 @@ impl OrbisApp {
                         let current = values.get(s);
                         let text = current.map(|v| s.value_name(v)).unwrap_or_else(|| "—".into());
                         let choices = self.cam_choices.get(s);
-                        if choices.is_empty() || !editable {
+                        if s == Setting::Mode {
+                            // Read-only: the X-T4 takes the mode from its dials,
+                            // and setting it via USB blocks the shutter.
+                            ui.strong(text).on_hover_text(
+                                "Set on the camera: M = shutter dial on a speed and aperture ring on a value (neither on A).\n\
+                                 Orbis doesn't change the mode: the X-T4 then refuses to shoot until it's switched off and on.",
+                            );
+                        } else if let Some(why) = locked_by_mode(s, values.get(Setting::Mode)) {
+                            ui.strong(text).on_hover_text(why);
+                        } else if choices.is_empty() || !editable {
                             ui.strong(text);
                         } else {
                             egui::ComboBox::from_id_salt(s.label())
@@ -773,7 +801,7 @@ impl OrbisApp {
                 // Hints for consistent photogrammetry photos.
                 let mut tips = Vec::new();
                 if values.get(Setting::Mode) != Some(fuji::ffi::XSDK_AE_OFF) {
-                    tips.push("Mode M keeps the exposure identical for every photo.");
+                    tips.push("Use M for identical exposure: shutter dial on a speed, aperture ring on a value (not A).");
                 }
                 if values.get(Setting::Iso).is_some_and(|v| v < 0) {
                     tips.push("Auto ISO changes brightness between shots: pick a fixed ISO.");
@@ -796,8 +824,8 @@ impl OrbisApp {
                 if ui
                     .add_enabled(editable, egui::Button::new("✨ Photogrammetry settings"))
                     .on_hover_text(
-                        "M mode, ISO 160, daylight white balance, Provia colours, RAW + JPEG Fine.\n\
-                         Aperture and shutter stay as they are: set them for your light.",
+                        "ISO 160, daylight white balance, Provia colours, RAW + JPEG Fine.\n\
+                         Mode, aperture and shutter stay as they are: set M on the camera's dials for your light.",
                     )
                     .clicked()
                 {
@@ -1276,4 +1304,14 @@ fn setup_fonts(ctx: &egui::Context, zoom: f32) {
         s.spacing.button_padding = egui::vec2(8.0, 4.0);
     });
     ctx.set_zoom_factor(zoom.clamp(0.6, 2.5));
+}
+
+/// Settings the camera picks itself in the current mode (dials).
+fn locked_by_mode(s: Setting, mode: Option<i32>) -> Option<&'static str> {
+    use fuji::ffi::{XSDK_AE_APERTURE_PRIORITY as A, XSDK_AE_PROGRAM as P, XSDK_AE_SHUTTER_PRIORITY as S};
+    match (s, mode) {
+        (Setting::Aperture, Some(P | S)) => Some("The camera picks the aperture in this mode. Turn the aperture ring off A to set it."),
+        (Setting::Shutter, Some(P | A)) => Some("The camera picks the shutter speed in this mode. Turn the shutter dial off A to set it."),
+        _ => None,
+    }
 }

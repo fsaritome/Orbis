@@ -166,7 +166,6 @@ impl Choices {
 /// and focus behaviour for every photo, maximum detail.
 pub fn photogrammetry_preset() -> Vec<(Setting, i32)> {
     vec![
-        (Setting::Mode, XSDK_AE_OFF),
         (Setting::Iso, 160),
         (Setting::WhiteBalance, SDK_WB_DAYLIGHT),
         (Setting::FilmSimulation, SDK_FILMSIMULATION_PROVIA),

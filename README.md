@@ -123,10 +123,11 @@ cargo run --release -p orbis
 - **Scan:** name, detail preset, rings, settle time, time/disk estimate.
   *Start scan* turns, settles, shoots and saves every position;
   *Dry run* turns only.
-- **Camera:** full control from the app: mode, aperture, shutter, ISO,
-  white balance, focus (MF/AF-S/AF-C), image quality, film simulation.
-  Value lists come from the camera itself. **✨ Photogrammetry settings**
-  sets M, ISO 160, daylight WB, Provia, RAW + JPEG Fine in one click; tips
+- **Camera:** aperture, shutter, ISO, white balance, focus (MF/AF-S/AF-C),
+  image quality and film simulation from the app; value lists come from the
+  camera itself. The **mode** follows the camera's dials and is shown
+  read-only (see Camera setup). **✨ Photogrammetry settings** sets ISO
+  160, daylight WB, Provia, RAW + JPEG Fine in one click; tips
   flag anything that would make photos inconsistent. Your choices are
   re-applied on every connect (the X-T4 returns to its dials when the app
   lets go). Autofocus toggle and test shot. Connects over USB or Wi-Fi.
@@ -224,14 +225,21 @@ own licenses. Command line: `cargo run --release -p recon -- <scan folder>
 
 ### Camera setup (X-T4)
 
-- MENU → wrench → CONNECTION SETTING → CONNECTION MODE →
-  **USB TETHER SHOOTING AUTO**, then replug USB.
+- MENU → wrench → CONNECTION SETTING → PC CONNECTION MODE →
+  **USB TETHER SHOOTING FIXED** (stays in tether mode through reconnects;
+  AUTO works too), then replug USB. Use a data USB-C cable: some only
+  charge. *🔌 Connections* in the app picks USB or Wi-Fi.
 - **Or over Wi-Fi:** CONNECTION SETTING → WIRELESS SETTINGS (access point,
   IP address), then PC CONNECTION MODE → **WIRELESS TETHER SHOOTING FIXED**,
   and enter the camera's IP under *Wi-Fi address* in the camera panel.
   Orbis tries USB first, then Wi-Fi. Photos arrive slower (≈45 MB RAW +
   JPEG each) and Wi-Fi drains the battery faster: JPEG only and a
   DC coupler (CP-W235) help. `cam --ip <address> info` tests it.
+- **Mode M on the camera itself:** shutter dial on a speed, aperture ring
+  on a value (neither on A). Orbis never sets the mode over USB: on the
+  X-T4 that makes the camera refuse every shot until it's switched off and
+  on. In P/A/S the camera picks aperture and/or shutter, so the app shows
+  those read-only.
 - Everything else is set from the app. Best results: press
   ✨ Photogrammetry settings, pick aperture/shutter for your light, focus
   once (test shot with autofocus), then set Focus = MF and switch off

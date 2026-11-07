@@ -100,6 +100,11 @@ Release etc.) without the user's OK.
 
 ## Camera troubleshooting (learned the hard way)
 
+- **SHOOT_ERROR on every release while the battery is fine = the exposure
+  mode was set over the SDK.** On the X-T4 `SetAEMode` makes the camera
+  refuse all releases (even in later sessions) until it's switched off and
+  on. Orbis never sets the mode; it comes from the dials. Found with
+  `cam shoot --probe presetN` (one setting per run).
 - **SHOOT_ERROR on every release + the camera switching itself off = low
   battery.** Check `battery_percent` in `/status` (or `GET /camera/diag`,
   `cam diag`) before debugging anything else.
@@ -109,6 +114,8 @@ Release etc.) without the user's OK.
   sets AUTO POWER OFF in the camera menu.
 - "RAW + JPEG Super Fine" is offered by the camera but refused
   (COMBINATION); don't pick it in tests.
+- The user runs the camera on **USB (USB TETHER SHOOTING FIXED)**. Wi-Fi works
+  (22 s per photo vs 2.5 s) but isn't used.
 - The camera can also be on **Wi-Fi** (PC CONNECTION MODE → WIRELESS
   TETHER SHOOTING FIXED; address in the app's camera panel or `POST
   /camera/wifi`; `cam --ip <addr> ...`). Orbis tries USB first. Over Wi-Fi

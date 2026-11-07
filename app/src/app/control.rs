@@ -192,6 +192,16 @@ impl OrbisApp {
                         .into_iter()
                         .find(|s| s.label().eq_ignore_ascii_case(k))
                         .ok_or_else(|| Reply::err(400, format!("unknown setting {k}: {}", Setting::ALL.map(|s| s.label()).join(", "))))?;
+                    if let Some(why) = super::locked_by_mode(s, self.cam_values.as_ref().and_then(|v| v.get(Setting::Mode))) {
+                        return Err(Reply::err(409, format!("{}: {why}", s.label())));
+                    }
+                    if s == Setting::Mode {
+                        return Err(Reply::err(
+                            400,
+                            "the mode comes from the camera's dials (M = shutter dial on a speed, aperture ring on a value); \
+                             setting it over USB makes the X-T4 refuse to shoot",
+                        ));
+                    }
                     changes.push((s, self.resolve_value(s, v)?));
                 }
                 if !changes.is_empty() {

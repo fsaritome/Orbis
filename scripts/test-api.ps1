@@ -63,8 +63,13 @@ $cam = (Api GET /camera).Json.settings
 $before = @{}; foreach ($k in $cam.PSObject.Properties.Name) { $before[$k] = $cam.$k.value }
 function CamSet([string]$k, $v) { Api POST /camera @{ $k = $v } }
 function CamName([string]$k) { (Api GET /camera).Json.settings.$k.name }
+$mode = $cam.Mode.name
 foreach ($k in 'Aperture', 'ISO', 'White balance', 'Focus', 'Image quality', 'Film simulation') {
     $c = $cam.$k
+    if ($k -eq 'Aperture' -and $mode -match '^(P|S)') {
+        Check "Aperture locked in mode $mode -> 409" ((CamSet $k 'f/8').Code -eq 409)
+        continue
+    }
     # "Super Fine" is offered but refused (COMBINATION), and the X-T4 dropped off USB after it once.
     $other = $c.choices | Where-Object { $_ -ne $c.name -and $_ -notmatch "Super Fine" } | Select-Object -First 1
     if (-not $other) { Check "$k has choices" $false; continue }
@@ -74,23 +79,26 @@ foreach ($k in 'Aperture', 'ISO', 'White balance', 'Focus', 'Image quality', 'Fi
     $null = CamSet $k $before[$k]
     WaitFor "$k back to $($c.name)" { (CamName $k) -eq $c.name } 8 | Out-Null
 }
-# Mode and shutter: shutter is only settable in M.
-$r = CamSet 'Mode' 'M'
-WaitFor 'Mode -> M' { (CamName 'Mode') -like 'M*' } 8 | Out-Null
+# The mode comes from the dials; Orbis refuses to set it (it would block the
+# shutter on the X-T4). Shutter is only settable when the dials say M or S.
+Check 'Mode is read-only -> 400' ((CamSet 'Mode' 'M').Code -eq 400)
 $sh = (Api GET /camera).Json.settings.Shutter
-Check 'shutter choices in M' ($sh.choices.Count -gt 10) "$($sh.choices.Count)"
 if ($sh.choices -contains '1/60') {
+    $old = $sh.name
     $null = CamSet 'Shutter' '1/60'
     WaitFor 'Shutter -> 1/60' { (CamName 'Shutter') -eq '1/60' } 8 | Out-Null
+    $null = CamSet 'Shutter' $old
+} else {
+    Write-Host '  skip  shutter (camera dials not on M/S)' -ForegroundColor DarkGray
 }
-Check 'value by name (f8 without slash)' ((CamSet 'Aperture' 'f8').Code -eq 200)
+if ($mode -notmatch '^(P|S)') { Check 'value by name (f8 without slash)' ((CamSet 'Aperture' 'f8').Code -eq 200) }
 Check 'unknown setting -> 400' ((CamSet 'Zoom' 3).Code -eq 400)
 Check 'unknown value -> 400' ((CamSet 'ISO' 'banana').Code -eq 400)
 $r = Api POST /camera/preset @{}
-WaitFor 'photogrammetry preset (M, ISO 160)' { $c = (Api GET /camera).Json.settings; $c.Mode.name -like 'M*' -and $c.ISO.name -eq 'ISO 160' } 10 | Out-Null
+WaitFor 'photogrammetry preset (ISO 160, Provia)' { $c = (Api GET /camera).Json.settings; $c.ISO.name -eq 'ISO 160' -and $c.'Film simulation'.name -like 'Provia*' } 10 | Out-Null
 # Put everything back (mode first).
-$restore = [ordered]@{ Mode = $before['Mode'] }
-foreach ($k in $before.Keys) { if ($k -ne 'Mode' -and $null -ne $before[$k]) { $restore[$k] = $before[$k] } }
+$restore = [ordered]@{}
+foreach ($k in $before.Keys) { if ($k -notin 'Mode', 'Shutter' -and $null -ne $before[$k]) { $restore[$k] = $before[$k] } }
 $null = Api POST /camera $restore
 Start-Sleep 2
 
